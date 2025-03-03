@@ -423,6 +423,7 @@ def lmcache_store_kv(
     model_input: "ModelInputForGPUWithSamplingMetadata",
     kv_caches: List[torch.Tensor],
     store_status: List[StoreStatus],
+    hidden_states: Optional[torch.Tensor] = None,
 ) -> None:
     """Store the KV caches into LMCache for the current model_input.
 
@@ -561,7 +562,8 @@ def lmcache_store_kv(
                              kv_tensors_mask,
                              kvcaches=kv_caches,
                              slot_mapping=slot_mapping_req_full,
-                             offset=skipped_token_num)
+                             offset=skipped_token_num,
+                             hidden_states=hidden_states)
             else:
                 stored_token_num = 0
                 skipped_token_num = seq_len
@@ -576,8 +578,9 @@ def lmcache_retrieve_kv(
     model_input: "ModelInputForGPUWithSamplingMetadata",
     cache_config: CacheConfig,
     kv_caches: List[torch.Tensor],
-    retrieve_status: RetrieveStatus,
-) -> Tuple["ModelInputForGPUWithSamplingMetadata", bool]:
+    retrieve_status: List[RetrieveStatus],
+) -> Tuple["ModelInputForGPUWithSamplingMetadata", Optional[torch.Tensor],
+           bool]:
     """Retrieve the KV caches from LMCache for the current model_input. And 
     rebuild the model_input to reflect the changes in KV if necessary.
 
@@ -602,7 +605,7 @@ def lmcache_retrieve_kv(
     assert engine is not None, "LMCache engine is not initialized."
 
     if engine.config.enable_blending:
-        return model_input, False
+        return model_input, None, False
 
     assert isinstance(model_input.attn_metadata, FlashAttentionMetadata), \
         "Only FlashAttention backend is supported for now."
@@ -642,6 +645,8 @@ def lmcache_retrieve_kv(
                                            is not None)
     seq_group_list = model_input.sampling_metadata.seq_groups
     assert seq_group_list is not None
+
+    hidden_states_list = []
 
     for seq_group in seq_group_list:
         seq_ids = seq_group.seq_ids
@@ -700,11 +705,12 @@ def lmcache_retrieve_kv(
                 slot_mapping_req_full = slot_mapping[start_pos:end_pos]
 
             # call lmcache retrieve
-            ret_token_mask = engine.retrieve(
+            ret_token_mask, seq_hidden_states = engine.retrieve(
                 full_token_tensor,
                 token_mask,
                 kvcaches=kv_caches,
                 slot_mapping=slot_mapping_req_full)
+
             lmc_num_computed_tokens = max(
                     torch.sum(ret_token_mask).item() - \
                     (vllm_num_computed_tokens - vllm_num_computed_tokens_align),
@@ -721,7 +727,7 @@ def lmcache_retrieve_kv(
             # is batched with any decode or other chunked prefills.
             if retrieve_status == RetrieveStatus.CHUNK_PREFILL:
                 if num_computed_tokens != total_seq_len:
-                    return model_input, False
+                    return model_input, None, False
             else:
                 # Avoid error when prefix is exactly the same as the retrieved
                 # However, the entire prefill should be skipped in chunk prefill
@@ -733,8 +739,10 @@ def lmcache_retrieve_kv(
             lmc_num_computed_tokens_list.append(lmc_num_computed_tokens)
 
             # No cache found, move on
-            if lmc_num_computed_tokens == 0:
+            if lmc_num_computed_tokens == 0 or seq_hidden_states is None:
                 num_request_not_found += 1
+
+            hidden_states_list.append(seq_hidden_states)
 
             # Inject the lmc retrieved kv cache
             logger.debug(f"Injected token number: {lmc_num_computed_tokens}")
@@ -746,9 +754,11 @@ def lmcache_retrieve_kv(
     assert len(lmc_num_computed_tokens_list) == seq_cnt
     assert len(num_computed_tokens_list) == seq_cnt
 
-    if retrieve_status == RetrieveStatus.CHUNK_PREFILL and \
+    if retrieve_status[0] == RetrieveStatus.PREFILL and \
         num_request_not_found == 0:
-        return model_input, True
+        device = kv_caches[0].device
+        hidden_states = torch.cat(hidden_states_list, dim=0).to(device)
+        return model_input, hidden_states, True
 
     # Some of the request can be skipped for a bit
     # TODO(Jiayi): need e2e test full prefill and partial prefill
@@ -766,10 +776,10 @@ def lmcache_retrieve_kv(
             cache_config,
         )
         logger.debug("Rebuilt the input!")
-        return rebuilt_model_input, False
+        return rebuilt_model_input, None, False
 
     logger.debug("Returning the original input!")
-    return model_input, False
+    return model_input, None, False
 
 
 def build_partial_prefill_input(
