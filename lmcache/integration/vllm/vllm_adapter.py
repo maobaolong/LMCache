@@ -49,6 +49,9 @@ from vllm.config import (
     ParallelConfig,
     SchedulerConfig,
 )
+from vllm.distributed.parallel_state import (
+    get_tp_group,
+)
 from vllm.sequence import IntermediateTensors
 from vllm.utils import cdiv, get_kv_cache_torch_dtype, round_down
 
@@ -184,6 +187,7 @@ def init_lmcache_engine(
     # Change current device.
     torch.cuda.device(parallel_config.rank)
     device = torch.device(f"cuda:{parallel_config.rank}")
+    # TODO(baoloongmao): set first_rank to metadata
     metadata = LMCacheEngineMetadata(
         model_config.model,
         parallel_config.world_size,
@@ -236,8 +240,15 @@ def init_lmcache_engine(
             device=device,
             use_mla=use_mla,
         )
+
+    tpg = get_tp_group()
     engine = LMCacheEngineBuilder.get_or_create(
-        ENGINE_NAME, config, metadata, vllm_gpu_connector
+        ENGINE_NAME,
+        config,
+        metadata,
+        vllm_gpu_connector,
+        tpg.broadcast,
+        tpg.broadcast_object,
     )
 
     return engine
