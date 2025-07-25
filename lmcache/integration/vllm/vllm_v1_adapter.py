@@ -189,6 +189,7 @@ class RequestTracker:
         if len(new_token_ids) == 1:
             self.is_decode_phase = True
 
+
 @dataclass
 class ReqMeta:
     # Request id
@@ -243,18 +244,21 @@ class ReqMeta:
         # For save operation: do not save if the following condition is met
         # 1. has already been saved before (num_saved_tokens > 0)
         # 2. number of unsaved tokens is not reached the chunk boundary
-        # 3. if save_decode_cache is False and we are in decode phase (num_saved_tokens > 0)
-        
+        # 3. if save_decode_cache is False and we are in decode phase
+        # (num_saved_tokens > 0)
+
         # Skip save if we're in decode phase and save_decode_cache is False
         save_decode_cache = lmcache_connector.config.save_decode_cache
-        
+
         skip_leading_tokens = tracker.num_saved_tokens
         chunk_boundary = (
             cdiv(tracker.num_saved_tokens + 1, lmcache_chunk_size) * lmcache_chunk_size
         )
-        skip_save = skip_save or (
-            tracker.num_saved_tokens > 0 and input_token_len < chunk_boundary
-        ) or (not save_decode_cache and tracker.is_decode_phase)
+        skip_save = (
+            skip_save
+            or (tracker.num_saved_tokens > 0 and input_token_len < chunk_boundary)
+            or (not save_decode_cache and tracker.is_decode_phase)
+        )
 
         if skip_save and load_spec is None:
             return None
@@ -359,7 +363,7 @@ class LMCacheConnectorV1Impl:
         if role == KVConnectorRole.SCHEDULER:
             # Create lookup client using factory
             self.lookup_client = LookupClientFactory.create_lookup_client(
-                vllm_config, config
+                vllm_config, self.config
             )
             self._unfinished_requests: dict[str, Request] = {}
             self._lookup_requests_in_step: list[str] = []
