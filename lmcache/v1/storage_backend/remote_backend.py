@@ -176,7 +176,7 @@ class RemoteBackend(StorageBackendInterface):
             return None
 
         # If MLA worker id as 0 mode is enabled, skip put tasks
-        if self._mla_worker_id_as0_mode:
+        if self._mla_worker_id_as0_mode or self.exists_in_put_tasks(key):
             return None
 
         memory_obj.ref_count_up()
