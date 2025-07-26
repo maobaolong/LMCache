@@ -67,4 +67,4 @@ class AuditConnectorAdapter(ConnectorAdapter):
         connector = CreateConnector(
             real_url, context.loop, context.local_cpu_backend, context.config
         )
-        return AuditConnector(connector, verify_checksum)
+        return AuditConnector(connector.getWrappedConnector(), verify_checksum)
