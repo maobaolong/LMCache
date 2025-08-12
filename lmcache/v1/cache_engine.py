@@ -1,7 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
 from collections import defaultdict
-from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generator,
+    List,
+    Optional,
+    OrderedDict,
+    Tuple,
+    Union,
+)
 import asyncio
 import gc
 import multiprocessing
@@ -229,8 +239,16 @@ class LMCacheEngine:
         tot_token_num = 0
         t = time.perf_counter()
 
+        tags = kwargs.get("tags")
+        if tags is not None and len(tags) != 0:
+            assert isinstance(tags, OrderedDict)
+
         for start, end, key in self.token_database.process_tokens(
-            tokens, hashes, offsets, mask
+            tokens,
+            hashes,
+            offsets,
+            mask,
+            tags=tags,
         ):
             assert isinstance(key, CacheEngineKey)
             # Allocate the memory object
@@ -326,8 +344,12 @@ class LMCacheEngine:
         memory_objs = []
         tot_token_num = 0
         kv_dtype = self.metadata.kv_dtype
+        tags = kwargs.get("tags")
+        if tags is not None and len(tags) != 0:
+            assert isinstance(tags, OrderedDict)
+
         for start, end, key in self.token_database.process_tokens(
-            tokens=tokens, mask=mask
+            tokens=tokens, mask=mask, tags=tags
         ):
             assert isinstance(key, CacheEngineKey)
 
@@ -438,6 +460,7 @@ class LMCacheEngine:
                 tokens,
                 mask,
                 ret_mask,
+                **kwargs,
             )
         if self.save_only_first_rank:
             self._broadcast_or_receive_memory_objs(
@@ -512,8 +535,14 @@ class LMCacheEngine:
         starts = []
         ends = []
         keys = []
+
+        tags = kwargs.get("tags")
+        if tags is not None and len(tags) != 0:
+            assert isinstance(tags, OrderedDict)
         for start, end, key in self.token_database.process_tokens(
-            tokens=tokens, mask=mask
+            tokens=tokens,
+            mask=mask,
+            tags=tags,
         ):
             assert isinstance(key, CacheEngineKey)
 
@@ -585,6 +614,7 @@ class LMCacheEngine:
         self,
         tokens: Union[torch.Tensor, List[int]],
         mask: Optional[torch.Tensor] = None,
+        tags: OrderedDict = None,
     ) -> None:
         """Launch the prefetching process in the storage manager to load the
         KV to the local CPU memory
@@ -592,7 +622,7 @@ class LMCacheEngine:
         if self._is_passive():
             return
         for start, end, key in self.token_database.process_tokens(
-            tokens=tokens, mask=mask
+            tokens=tokens, mask=mask, tags=tags
         ):
             assert isinstance(key, CacheEngineKey)
             self.storage_manager.prefetch(key)
@@ -604,6 +634,7 @@ class LMCacheEngine:
         search_range: Optional[List[str]] = None,
         lookup_id: Optional[str] = None,
         pin: bool = False,
+        tags: OrderedDict = None,
     ) -> int:
         """
         Checks the existence of KV cache of the tokens from the cache engine.
@@ -635,7 +666,9 @@ class LMCacheEngine:
                 search_range is None or "p2p" in search_range
             )
 
-            for start, end, key in self.token_database.process_tokens(tokens=tokens):
+            for start, end, key in self.token_database.process_tokens(
+                tokens=tokens, tags=tags
+            ):
                 assert isinstance(key, CacheEngineKey)
 
                 if self.use_layerwise:
@@ -806,21 +839,23 @@ class LMCacheEngine:
         self,
         tokens: Optional[Union[torch.Tensor, List[int]]] = None,
         locations: Optional[List[str]] = None,
+        tags: OrderedDict = None,  # TODO: need to clean by tags
     ) -> int:
         if self.save_only_first_rank:
             if self.metadata.is_first_rank():
-                num_removed = self._clear(tokens, locations)
+                num_removed = self._clear(tokens, locations, tags)
                 self.broadcast_object_fn(num_removed, self.metadata.first_rank)
                 return num_removed
             else:
                 num_removed = self.broadcast_object_fn(None, self.metadata.first_rank)
                 return int(num_removed)
-        return self._clear(tokens, locations)
+        return self._clear(tokens, locations, tags)
 
     def _clear(
         self,
         tokens: Optional[Union[torch.Tensor, List[int]]] = None,
         locations: Optional[List[str]] = None,
+        tags: OrderedDict = None,  # TODO: need to clean by tags
     ) -> int:
         assert isinstance(self.storage_manager, StorageManager)
         # Clear all caches if tokens is None
@@ -830,7 +865,9 @@ class LMCacheEngine:
 
         num_removed = 0
         # Only remove the caches for the given tokens
-        for start, end, key in self.token_database.process_tokens(tokens=tokens):
+        for start, end, key in self.token_database.process_tokens(
+            tokens=tokens, tags=tags
+        ):
             assert isinstance(key, CacheEngineKey)
             removed = self.storage_manager.remove(key, locations)
             num_removed += removed
@@ -856,6 +893,7 @@ class LMCacheEngine:
         tokens,
         mask,
         ret_mask,
+        **kwargs,
     ) -> List[Tuple[CacheEngineKey, MemoryObj, int, int]]:
         """Process tokens and populate the reordered lists.
 
@@ -865,6 +903,7 @@ class LMCacheEngine:
             tokens: Input tokens to process
             mask: Mask indicating valid token positions
             ret_mask: Output mask updated with cache hit positions
+            **kwargs: Additional keyword arguments
         """
         # location -> [(CacheEngineKey, start, end)]
         block_mapping: Dict[str, List[Tuple[CacheEngineKey, int, int]]] = defaultdict(
@@ -873,8 +912,13 @@ class LMCacheEngine:
         # [(CacheEngineKey, MemoryObj, start, end)]
         reordered_chunks: List[Tuple[CacheEngineKey, MemoryObj, int, int]] = []
 
+        tags = kwargs.get("tags")
+        if tags is not None and len(tags) != 0:
+            assert isinstance(tags, OrderedDict)
         for start, end, key in self.token_database.process_tokens(
-            tokens=tokens, mask=mask
+            tokens=tokens,
+            mask=mask,
+            tags=tags,
         ):
             assert isinstance(key, CacheEngineKey)
 
