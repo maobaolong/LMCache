@@ -26,6 +26,7 @@ from lmcache.logging import init_logger
 from lmcache.observability import LMCacheStatsLogger, LMCStatsMonitor
 from lmcache.usage_context import InitializeUsageContext
 from lmcache.utils import CacheEngineKey, _lmcache_nvtx_annotate
+from lmcache.v1.cache_engine_internal_api_server import CacheEngineInternalAPIServer
 from lmcache.v1.config import LMCacheEngineConfig
 from lmcache.v1.distributed_server import (
     DistributedServerInterface,
@@ -172,6 +173,14 @@ class LMCacheEngine:
         gc.collect()
         if not config.py_enable_gc:
             gc.disable()
+
+        # Start api server
+        if config.cache_engine_internal_api_server_enabled and metadata.worker_id == 0:
+            # TODO(baoloongmao): support create api servers for each worker.
+            self.api_server = CacheEngineInternalAPIServer(config)
+            self.api_server.start()
+        else:
+            self.api_server = None
 
     def post_init(self, **kwargs) -> None:
         if not self.post_inited:
@@ -895,6 +904,10 @@ class LMCacheEngine:
         self.storage_manager.close()
 
         self.memory_allocator.close()
+
+        # Stop the API server
+        if self.api_server is not None:
+            self.api_server.stop()
 
         logger.info("LMCacheEngine closed.")
 
