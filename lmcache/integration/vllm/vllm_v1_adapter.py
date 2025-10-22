@@ -1153,7 +1153,7 @@ class LMCacheConnectorV1Impl:
                 store_mask = torch.ones(len(token_ids), dtype=torch.bool)
                 store_mask[:skip_leading_tokens] = False
 
-                logger.info(
+                logger.debug(
                     "Storing KV cache for %d out of %d tokens "
                     "(skip_leading_tokens=%d) for request %s",
                     len(token_ids) - skip_leading_tokens,
@@ -1243,7 +1243,7 @@ class LMCacheConnectorV1Impl:
             store_mask = torch.ones(len(token_ids), dtype=torch.bool)
             store_mask[:skip_leading_tokens] = False
 
-            logger.info(
+            logger.debug(
                 "Storing KV cache for %d out of %d tokens "
                 "(skip_leading_tokens=%d) for request %s",
                 len(token_ids) - skip_leading_tokens,
