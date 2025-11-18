@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
-from dataclasses import dataclass
+from collections import defaultdict
 
 # First Party
 from lmcache.v1.cache_controller.message import (
@@ -26,29 +26,12 @@ from lmcache.v1.cache_controller.message import (
 from lmcache.v1.token_database import ChunkedTokenDatabase
 
 
-@dataclass
-class KVChunkMetadata:
-    """
-    A class representing a KV chunk metadata.
-    """
-
-    instance_id: str
-    worker_id: int
-    location: str
-
-
-# TODO(Jiayi): Need more efficient data structures (e.g., trie)
-# to handle these operations (e.g., evict, deregister)
-# more efficiently.
-
-
 class KVController:
     def __init__(self) -> None:
-        # NOTE (Jiayi): Even if we offload kv_pool to
-        # redis. We might need a local cache for handling
-        # messages like `check_finish`. Or everything should be
-        # written to redis.
-        self.kv_pool: dict[int, list[KVChunkMetadata]] = {}
+        # Mapping from `(instance_id, worker_id)` -> [location -> set[chunk_hash]]
+        self.kv_pool: dict[tuple[str, int], dict[str, set[int]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
 
         # TODO(Jiayi): remove this hardcode
         self.token_database = ChunkedTokenDatabase()
@@ -64,40 +47,29 @@ class KVController:
         """
         Admit a new kv chunk.
         """
-        instance_id = msg.instance_id
-        worker_id = msg.worker_id
-        key = msg.key
-        location = msg.location
-        if key not in self.kv_pool:
-            self.kv_pool[key] = []
-        self.kv_pool[key].append(KVChunkMetadata(instance_id, worker_id, location))
+        report_id = (msg.instance_id, msg.worker_id)
+        self.kv_pool[report_id][msg.location].add(msg.key)
 
     async def evict(self, msg: KVEvictMsg) -> None:
         """
         Evict a kv chunk.
         """
-        instance_id = msg.instance_id
-        worker_id = msg.worker_id
-        key = msg.key
+        report_id = (msg.instance_id, msg.worker_id)
         location = msg.location
+        key = msg.key
 
-        if key not in self.kv_pool:
+        if (
+            report_id not in self.kv_pool
+            or location not in self.kv_pool[report_id]
+            or key not in self.kv_pool[report_id][location]
+        ):
             return
 
-        remaining = [
-            m
-            for m in self.kv_pool[key]
-            if not (
-                m.instance_id == instance_id
-                and m.worker_id == worker_id
-                and m.location == location
-            )
-        ]
-
-        if remaining:
-            self.kv_pool[key] = remaining
-        else:
-            del self.kv_pool[key]
+        self.kv_pool[report_id][location].remove(key)
+        if not self.kv_pool[report_id][location]:
+            del self.kv_pool[report_id][location]
+        if not self.kv_pool[report_id]:
+            del self.kv_pool[report_id]
 
     async def clear(self, msg: ClearMsg) -> ClearRetMsg:
         """
@@ -139,34 +111,40 @@ class KVController:
         """
         Deregister all kv chunks of an instance-worker.
         """
-        for key in self.kv_pool:
-            self.kv_pool[key] = [
-                m
-                for m in self.kv_pool[key]
-                if not (m.instance_id == instance_id and m.worker_id == worker_id)
-            ]
-            if not self.kv_pool[key]:
-                del self.kv_pool[key]
+        report_id = (instance_id, worker_id)
+        if report_id in self.kv_pool:
+            del self.kv_pool[report_id]
 
     # TODO(Jiayi): The current implementation does not handle
     # the case where the prefix chunks are evicted while the
     # suffix chunk is still in the system. LMCache should guarantee
     # this does not happen.
-    # TODO(Jiayi): The current implementation does not consider
-    # the location of the kv chunks. It simply returns the
-    # `instance_id` with longest prefix.
     # TODO(Jiayi): Need to get rid of the hash somehow
     async def lookup(self, msg: LookupMsg) -> LookupRetMsg:
         tokens = msg.tokens
         layout_info = {}
-        for start, end, key in self.token_database.process_tokens(
-            tokens, make_key=False
-        ):
-            if key not in self.kv_pool:
-                break
-            matched_instance = self.kv_pool[key][0].instance_id
-            matched_location = self.kv_pool[key][0].location
-            layout_info[matched_instance] = (matched_location, end)
+        chunk_infos = list(self.token_database.process_tokens(tokens, make_key=False))
+        num_hit_tokens = 0
+        matched_instance_id = ""
+        for (instance_id, worker_id), location_kvs in self.kv_pool.items():
+            tmp_hit_tokens = 0
+            for start, end, key in chunk_infos:
+                contains = False
+                for location, kvs in location_kvs.items():
+                    if key in kvs:
+                        contains = True
+                        break
+                if not contains:
+                    break
+                tmp_hit_tokens = end
+            if tmp_hit_tokens > num_hit_tokens:
+                num_hit_tokens = tmp_hit_tokens
+                matched_instance_id = instance_id
+        if num_hit_tokens > 0:
+            # TODO(Jiayi): The current implementation does not consider
+            # the location of the kv chunks. It simply returns the
+            # `instance_id` with longest prefix.
+            layout_info[matched_instance_id] = ("", num_hit_tokens)
         return LookupRetMsg(layout_info=layout_info, event_id=msg.event_id)
 
     async def batched_p2p_lookup(
@@ -180,50 +158,32 @@ class KVController:
         :return: A BatchedP2PLookupRetMsg containing the lookup results.
         """
 
-        worker_id = msg.worker_id
         query_instance_id = msg.instance_id
         num_hit_chunks = 0
-        instance_id = ""
-        location = ""
+        matched_instance_id = ""
+        matched_location = ""
         peer_init_url = ""
-        for key in msg.hashes:
-            # TODO(Jiayi): remove this string conversion
-            if key not in self.kv_pool:
-                break
-
-            # TODO(Jiayi): Currently, we use the first matched
-            # kv chunk metadata to do matching. The matching
-            # logic can be improved.
-            # TODO(Jiayi): The KV Cache could be from different
-            # instances. We need to handle this case as well.
-            matched_kv_chunk_meta = None
-            for kv_chunk_meta in self.kv_pool[key]:
-                if kv_chunk_meta.instance_id != query_instance_id:
-                    # Found a matching instance_id that's not the
-                    # same as the query_instance_id.
-                    matched_kv_chunk_meta = kv_chunk_meta
-                    break
-
-            if matched_kv_chunk_meta is None:
-                break
-            if instance_id != "" and (
-                instance_id != matched_kv_chunk_meta.instance_id
-                or location != matched_kv_chunk_meta.location
-            ):
-                # We have already found a different instance_id
-                # before. Stop here.
-                break
-            elif instance_id == "":
-                instance_id = matched_kv_chunk_meta.instance_id
-                location = matched_kv_chunk_meta.location
-                peer_init_url = self.reg_controller.get_distributed_url(
-                    instance_id, worker_id
-                )
-                assert peer_init_url is not None
-            num_hit_chunks += 1
-
+        # TODO(Jiayi): The KV Cache could be from different
+        # instances. We need to handle this case as well.
+        for (instance_id, worker_id), location_kvs in self.kv_pool.items():
+            if instance_id == query_instance_id:
+                continue
+            for location, kvs in location_kvs.items():
+                tmp_hit_chunks = 0
+                for key in msg.hashes:
+                    if key not in kvs:
+                        break
+                    tmp_hit_chunks += 1
+                if tmp_hit_chunks > num_hit_chunks:
+                    num_hit_chunks = tmp_hit_chunks
+                    matched_instance_id = instance_id
+                    matched_location = location
+                    peer_init_url = self.reg_controller.get_distributed_url(
+                        instance_id, worker_id
+                    )
+                    assert peer_init_url is not None
         return BatchedP2PLookupRetMsg(
             layout_info=[
-                (instance_id, location, num_hit_chunks, peer_init_url),
+                (matched_instance_id, matched_location, num_hit_chunks, peer_init_url),
             ]
         )
