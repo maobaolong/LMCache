@@ -120,7 +120,16 @@ class LMCacheEngine:
         from lmcache.v1.cache_controller import LMCacheWorker
 
         self.lmcache_worker: Optional[LMCacheWorker] = None
-        if self.enable_controller and self.metadata.role != "scheduler":
+        lmcache_worker_ids = config.get_lmcache_worker_ids(
+            metadata.use_mla, metadata.world_size
+        )
+        if (
+            self.enable_controller
+            and self.metadata.role != "scheduler"
+            and (
+                len(lmcache_worker_ids) == 0 or metadata.worker_id in lmcache_worker_ids
+            )
+        ):
             self.lmcache_worker = LMCacheWorker(config, metadata, self)
 
         self.async_loading = config.enable_async_loading
