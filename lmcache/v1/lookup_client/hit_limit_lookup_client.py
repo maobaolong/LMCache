@@ -74,3 +74,6 @@ class HitLimitLookupClient(LookupClientInterface):
 
     def close(self) -> None:
         self.actual_lookup_client.close()
+
+    def lookup_cache(self, lookup_id: str) -> Optional[int]:
+        return self.actual_lookup_client.lookup_cache(lookup_id)
