@@ -1,0 +1,50 @@
+# LMCache Standalone Example Configuration - Multi-Worker Setup
+# This configuration is for running multiple LMCache workers (e.g., 2 workers)
+# Each worker should be started with different worker_id parameter
+
+# Basic cache settings
+chunk_size: 256
+save_unfull_chunk: true
+
+# LocalCPU backend
+local_cpu: true
+max_local_cpu_size: 4.0
+
+# P2P backend - Configure ports for all workers
+enable_p2p: true
+enable_pd: false
+p2p_host: "127.0.0.1"
+# One port per worker: worker_id=0 uses 6000, worker_id=1 uses 6001
+p2p_init_ports: [6000, 6001]
+# One port per worker: worker_id=0 uses 7000, worker_id=1 uses 7001
+p2p_lookup_ports: [7000, 7001]
+transfer_channel: "socket"
+
+# Controller
+enable_controller: true
+controller_pull_url: "127.0.0.1:5555"
+controller_reply_url: "127.0.0.1:5556"
+# One port per worker: worker_id=0 uses 8000, worker_id=1 uses 8001
+lmcache_worker_ports: [8000, 8001]
+
+# Performance
+enable_async_loading: true
+py_enable_gc: false
+
+# Internal API server
+internal_api_server_enabled: true
+internal_api_server_host: "0.0.0.0"
+# Each worker will use a different port based on worker_id
+internal_api_server_port_start: 8100
+
+# Instance ID
+lmcache_instance_id: "lmcache_standalone"
+
+# Usage:
+# Start worker 0:
+#   LMCACHE_CONFIG_FILE=lmcache_standalone_multi_worker.yaml \
+#   python lmcache_standalone.py --worker-id 0 --world-size 2
+#
+# Start worker 1:
+#   LMCACHE_CONFIG_FILE=lmcache_standalone_multi_worker.yaml \
+#   python lmcache_standalone.py --worker-id 1 --world-size 2

@@ -1,0 +1,42 @@
+# LMCache Standalone Example Configuration
+# Model: DeepSeek-V2-Lite with LocalCPU + P2P backends
+
+# Basic cache settings
+chunk_size: 256
+save_unfull_chunk: true
+
+# LocalCPU backend
+local_cpu: true
+max_local_cpu_size: 4.0
+
+# P2P backend
+enable_p2p: true
+enable_pd: false
+p2p_host: "127.0.0.1"
+p2p_init_ports: [6000]
+p2p_lookup_ports: [7000]
+transfer_channel: "socket"
+# P2P socket timeout (in milliseconds)
+# Default: 30000 (30 seconds)
+# Set to -1 for infinite timeout (no timeout)
+# extra_config:
+#   p2p_socket_recv_timeout_ms: 30000
+#   p2p_socket_send_timeout_ms: 30000
+
+# Controller
+enable_controller: true
+controller_pull_url: "127.0.0.1:5555"
+controller_reply_url: "127.0.0.1:5556"
+lmcache_worker_ports: [8000]
+
+# Performance
+enable_async_loading: true
+py_enable_gc: false
+
+# Internal API server
+internal_api_server_enabled: true
+internal_api_server_host: "0.0.0.0"
+internal_api_server_port_start: 8100
+
+# Instance ID
+lmcache_instance_id: "lmcache_standalone"
