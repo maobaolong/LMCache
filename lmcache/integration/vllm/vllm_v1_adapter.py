@@ -1508,6 +1508,9 @@ class LMCacheConnectorV1Impl:
         if num_external_hit_tokens == request.num_tokens:
             need_to_allocate -= 1
 
+        if need_to_allocate < 0:
+            need_to_allocate = 0
+
         logger.info(
             "Reqid: %s, Total tokens %d, LMCache hit tokens: %d, need to load: %d",
             req_id,
@@ -1521,9 +1524,6 @@ class LMCacheConnectorV1Impl:
             lmcache_cached_tokens=num_external_hit_tokens,
             can_load=False,
         )
-
-        if need_to_allocate <= 0:
-            return 0
 
         # TODO: Align to vLLM block size. Should test whether it can be removed
         # need_to_allocate = need_to_allocate // self._block_size * \
