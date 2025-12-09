@@ -7,6 +7,7 @@ import abc
 import torch
 
 # First Party
+from lmcache.config import LMCacheEngineMetadata
 from lmcache.integration.vllm.utils import ENGINE_NAME
 from lmcache.logging import init_logger
 from lmcache.utils import _lmcache_nvtx_annotate
@@ -101,6 +102,9 @@ class GPUConnectorInterface(metaclass=abc.ABCMeta):
     def get_shape(self, num_tokens: int) -> torch.Size:
         """Get the shape of the data given the number of tokens."""
         raise NotImplementedError
+
+    def get_indexer_shape(self, num_tokens: int) -> Optional[torch.Size]:
+        return None
 
     def initialize_kvcaches_ptr(self, **kwargs):
         """Initialize the kvcaches pointers if not already initialized."""
@@ -323,6 +327,208 @@ class VLLMPagedMemGPUConnectorV2(GPUConnectorInterface):
     def get_shape(self, num_tokens: int) -> torch.Size:
         kv_size = 1 if self.use_mla else 2
         return torch.Size([kv_size, self.num_layers, num_tokens, self.hidden_dim_size])
+
+
+class VLLMPagedMemGPUConnectorWithDSA(GPUConnectorInterface):
+    def __init__(
+        self,
+        metadata: LMCacheEngineMetadata,
+        device: torch.device,
+        use_gpu: bool = False,
+    ):
+        assert metadata.indexer_kv_dtype is not None
+        assert metadata.indexer_kv_shape is not None
+        assert device.type == "cuda", "The device should be CUDA."
+        self.metadata = metadata
+        self.device = device
+        self.use_mla = metadata.use_mla
+        self.num_layers = metadata.kv_shape[0]
+        self.hidden_dim_size = metadata.kv_shape[3] * metadata.kv_shape[4]
+        self.indexer_hidden_dim_size = (
+            metadata.indexer_kv_shape[3] * metadata.indexer_kv_shape[4]
+        )
+        self.chunk_size = metadata.kv_shape[2]
+        self.kv_cache_pointers_on_gpu: Optional[torch.Tensor] = None
+        self.indexer_kv_cache_pointers_on_gpu: Optional[torch.Tensor] = None
+        self.kvcaches: Optional[List[torch.Tensor]] = None
+        self.page_buffer_size = 0
+        self.gpu_buffer: Optional[torch.Tensor] = None
+        self.indexer_gpu_buffer: Optional[torch.Tensor] = None
+        if use_gpu:
+            shape = self.get_shape(self.chunk_size)
+            self.gpu_buffer = torch.empty(shape, dtype=metadata.kv_dtype, device=device)
+
+            indexer_shape = self.get_indexer_shape(self.chunk_size)
+            self.indexer_gpu_buffer = torch.empty(
+                indexer_shape, dtype=metadata.indexer_kv_dtype, device=device
+            )
+
+        self.store_stream = torch.cuda.Stream()
+        self.load_stream = torch.cuda.Stream()
+
+    def _initialize_pointers(self):
+        assert self.kvcaches is not None
+        assert self.kvcaches[0].device == self.device
+
+        if (
+            self.kv_cache_pointers_on_gpu is not None
+            and self.indexer_kv_cache_pointers_on_gpu is not None
+        ):
+            return
+
+        kv_cache_pointers = torch.empty(
+            self.num_layers, dtype=torch.int64, device="cpu"
+        )
+        kv_cache_pointers.numpy()[:] = [
+            t.data_ptr() for i, t in enumerate(self.kvcaches) if i % 2 == 0
+        ]
+        self.kv_cache_pointers_on_gpu = torch.empty(
+            self.num_layers, dtype=torch.int64, device=self.device
+        )
+        self.kv_cache_pointers_on_gpu.copy_(kv_cache_pointers)
+
+        indexer_kv_cache_pointers = torch.empty(
+            self.num_layers, dtype=torch.int64, device="cpu"
+        )
+        indexer_kv_cache_pointers.numpy()[:] = [
+            t.data_ptr() for i, t in enumerate(self.kvcaches) if i % 2 == 1
+        ]
+        self.indexer_kv_cache_pointers_on_gpu = torch.empty(
+            self.num_layers, dtype=torch.int64, device=self.device
+        )
+        self.indexer_kv_cache_pointers_on_gpu.copy_(indexer_kv_cache_pointers)
+
+        if self.use_mla:
+            # kvcaches[0].shape: [num_pages, page_size, head_size]
+            assert self.kvcaches[0].dim() == 3
+            self.page_buffer_size = (
+                self.kvcaches[0].shape[0] * self.kvcaches[0].shape[1]
+            )
+        else:
+            # kvcaches[0].shape: [2, num_pages, page_size, num_heads, head_size]
+            assert self.kvcaches[0].dim() == 5
+            self.page_buffer_size = (
+                self.kvcaches[0].shape[1] * self.kvcaches[0].shape[2]
+            )
+
+    @_lmcache_nvtx_annotate
+    def to_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs):
+        assert memory_obj.tensor is not None
+        assert "slot_mapping" in kwargs
+        if self.use_mla:
+            assert memory_obj.metadata.fmt == MemoryFormat.KV_MLA_FMT
+        else:
+            assert memory_obj.metadata.fmt == MemoryFormat.KV_2LTD
+
+        slot_mapping: torch.Tensor = kwargs["slot_mapping"]
+        self.initialize_kvcaches_ptr(**kwargs)
+        self._initialize_pointers()
+
+        # process normal kv cache
+        lmc_ops.multi_layer_kv_transfer(
+            memory_obj.tensor,
+            self.kv_cache_pointers_on_gpu,
+            slot_mapping[start:end],
+            self.device,
+            self.page_buffer_size,
+            False,
+            self.use_mla,
+        )
+        # process indexer kv cache
+        lmc_ops.multi_layer_kv_transfer(
+            memory_obj.indexer_tensor,
+            self.indexer_kv_cache_pointers_on_gpu,
+            slot_mapping[start:end],
+            self.device,
+            self.page_buffer_size,
+            False,
+            self.use_mla,
+        )
+
+    @_lmcache_nvtx_annotate
+    def from_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs):
+        assert memory_obj.tensor is not None
+        assert "slot_mapping" in kwargs
+
+        slot_mapping: torch.Tensor = kwargs["slot_mapping"]
+        self.initialize_kvcaches_ptr(**kwargs)
+        self._initialize_pointers()
+
+        with torch.cuda.stream(self.store_stream):
+            if self.gpu_buffer is None or end - start != self.gpu_buffer.shape[2]:
+                lmc_ops.multi_layer_kv_transfer(
+                    memory_obj.tensor,
+                    self.kv_cache_pointers_on_gpu,
+                    slot_mapping[start:end],
+                    self.device,
+                    self.page_buffer_size,
+                    True,
+                    self.use_mla,
+                )
+                lmc_ops.multi_layer_kv_transfer(
+                    memory_obj.indexer_tensor,
+                    self.indexer_kv_cache_pointers_on_gpu,
+                    slot_mapping[start:end],
+                    self.device,
+                    self.page_buffer_size,
+                    True,
+                    self.use_mla,
+                )
+            else:
+                # kvcaches -> gpu_buffer -> memobj
+                tmp_gpu_buffer = self.gpu_buffer[:, :, : end - start, :]
+                lmc_ops.multi_layer_kv_transfer(
+                    tmp_gpu_buffer,
+                    self.kv_cache_pointers_on_gpu,
+                    slot_mapping[start:end],
+                    self.device,
+                    self.page_buffer_size,
+                    True,
+                    self.use_mla,
+                )
+                memory_obj.tensor.copy_(tmp_gpu_buffer, non_blocking=True)
+                tmp_indexer_gpu_buffer = self.indexer_gpu_buffer[:, :, : end - start, :]
+                lmc_ops.multi_layer_kv_transfer(
+                    tmp_indexer_gpu_buffer,
+                    self.indexer_kv_cache_pointers_on_gpu,
+                    slot_mapping[start:end],
+                    self.device,
+                    self.page_buffer_size,
+                    True,
+                    self.use_mla,
+                )
+                memory_obj.indexer_tensor.copy_(
+                    tmp_indexer_gpu_buffer, non_blocking=True
+                )
+
+        if not memory_obj.tensor.is_cuda:
+            # Force a synchronize if the target buffer is NOT CUDA device
+            # NOTE: for better performance, we may not want to sync for every
+            # memory object
+            self.store_stream.synchronize()
+
+        if self.use_mla:
+            memory_obj.metadata.fmt = MemoryFormat.KV_MLA_FMT
+
+    def batched_to_gpu(self, memory_objs, starts, ends, **kwargs):
+        with torch.cuda.stream(self.load_stream):
+            for memory_obj, start, end in zip(memory_objs, starts, ends, strict=False):
+                self.to_gpu(memory_obj, start, end, **kwargs)
+        self.load_stream.synchronize()
+
+    def batched_from_gpu(self, memory_objs, starts, ends, **kwargs):
+        for memory_obj, start, end in zip(memory_objs, starts, ends, strict=False):
+            self.from_gpu(memory_obj, start, end, **kwargs)
+
+    def get_shape(self, num_tokens: int) -> torch.Size:
+        kv_size = 1 if self.use_mla else 2
+        return torch.Size([kv_size, self.num_layers, num_tokens, self.hidden_dim_size])
+
+    def get_indexer_shape(self, num_tokens: int) -> Optional[torch.Size]:
+        kv_size = 1 if self.use_mla else 2
+        return torch.Size(
+            [kv_size, self.num_layers, num_tokens, self.indexer_hidden_dim_size]
+        )
 
 
 class VLLMBufferLayerwiseGPUConnector(GPUConnectorInterface):

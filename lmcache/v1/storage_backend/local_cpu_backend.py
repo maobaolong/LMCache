@@ -430,6 +430,8 @@ class LocalCPUBackend(AllocatorBackendInterface):
         fmt: Optional[MemoryFormat] = None,
         eviction: bool = True,
         busy_loop: bool = True,
+        indexer_kv_shape: Optional[torch.Size] = None,
+        indexer_kv_dtype: Optional[torch.dtype] = None,
     ) -> Optional[MemoryObj]:
         """
         Allocate a memory object of shape and dtype
@@ -461,7 +463,13 @@ class LocalCPUBackend(AllocatorBackendInterface):
             else:
                 fmt = MemoryFormat.KV_2LTD
 
-        memory_obj = self.memory_allocator.allocate(shape, dtype, fmt)
+        memory_obj = self.memory_allocator.allocate(
+            shape,
+            dtype,
+            fmt,
+            indexer_kv_shape=indexer_kv_shape,
+            indexer_kv_dtype=indexer_kv_dtype,
+        )
         if memory_obj is not None or not eviction:
             return memory_obj
 

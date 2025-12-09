@@ -244,6 +244,8 @@ class PDBackend(AllocatorBackendInterface):
         fmt: MemoryFormat = MemoryFormat.KV_2LTD,
         eviction: bool = True,
         busy_loop: bool = True,
+        indexer_kv_shape: Optional[torch.Size] = None,
+        indexer_kv_dtype: Optional[torch.dtype] = None,
     ) -> Optional[MemoryObj]:
         if fmt is None:
             fmt = MemoryFormat.KV_2LTD

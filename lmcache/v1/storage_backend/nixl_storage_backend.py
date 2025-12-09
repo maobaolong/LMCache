@@ -644,6 +644,8 @@ class NixlStorageBackend(AllocatorBackendInterface):
         fmt: MemoryFormat = MemoryFormat.KV_2LTD,
         eviction: bool = True,
         busy_loop: bool = True,
+        indexer_kv_shape: Optional[torch.Size] = None,
+        indexer_kv_dtype: Optional[torch.dtype] = None,
     ) -> Optional[MemoryObj]:
         if busy_loop:
             logger.warning("NixlStorageBackend does not support busy loop for now")

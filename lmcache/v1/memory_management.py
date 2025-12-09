@@ -112,6 +112,9 @@ class MemoryObjMetadata:
     # Positions when the cache is stored
     cached_positions: Optional[torch.Tensor] = None
 
+    indexer_kv_shape: Optional[torch.Size] = (None,)
+    indexer_kv_dtype: Optional[torch.dtype] = (None,)
+
     def to_dict(self):
         # Note(Kuntai): this is used for serializing MemoryObjMetadata via
         # msgpack.
@@ -263,6 +266,13 @@ class MemoryObj(metaclass=abc.ABCMeta):
         Get the tensor from the MemoryObj.
         """
         raise NotImplementedError
+
+    @property
+    def indexer_tensor(self) -> Optional[torch.Tensor]:
+        """
+        Get the tensor from the MemoryObj.
+        """
+        return None
 
     @property
     @abc.abstractmethod
@@ -485,6 +495,17 @@ class TensorMemoryObj(MemoryObj):
         )
 
     @property
+    def indexer_tensor(self) -> Optional[torch.Tensor]:
+        if not self.valid:
+            logger.warning("Trying to access an invalidated MemoryObj")
+            return None
+        return (
+            self.raw_data[self.get_size() :]
+            .view(self.meta.indexer_kv_dtype)
+            .view(self.meta.indexer_kv_shape)
+        )
+
+    @property
     def byte_array(self) -> bytes:
         num_bytes = self.raw_data.numel() * self.raw_data.element_size()
         ptr = self.raw_data.data_ptr()
@@ -624,6 +645,8 @@ class MemoryAllocatorInterface(metaclass=abc.ABCMeta):
         dtype: Optional[torch.dtype],
         fmt: MemoryFormat = MemoryFormat.UNDEFINED,
         allocator_type: Optional[str] = None,
+        indexer_kv_shape: Optional[torch.Size] = None,
+        indexer_kv_dtype: Optional[torch.dtype] = None,
     ) -> Optional[MemoryObj]:
         """
         Allocates the memory to hold a tensor of the given shape.
@@ -733,7 +756,17 @@ class TensorMemoryAllocator(MemoryAllocatorInterface):
 
     @staticmethod
     @_lmcache_nvtx_annotate
-    def _Compute_raw_size(shape: torch.Size, dtype: torch.dtype) -> int:
+    def _Compute_raw_size(
+        shape: torch.Size,
+        dtype: torch.dtype,
+        indexer_kv_shape: Optional[torch.Size] = None,
+        indexer_kv_dtype: Optional[torch.dtype] = None,
+    ) -> int:
+        if indexer_kv_shape is not None and indexer_kv_dtype is not None:
+            return (
+                shape.numel() * dtype.itemsize
+                + indexer_kv_shape.numel() * indexer_kv_dtype.itemsize
+            )
         return shape.numel() * dtype.itemsize
 
     @staticmethod
@@ -795,6 +828,8 @@ class TensorMemoryAllocator(MemoryAllocatorInterface):
         dtype: Optional[torch.dtype],
         fmt: MemoryFormat = MemoryFormat.KV_2LTD,
         allocator_type: Optional[str] = None,
+        indexer_kv_shape: Optional[torch.Size] = None,
+        indexer_kv_dtype: Optional[torch.dtype] = None,
     ) -> Optional[TensorMemoryObj]:
         if not isinstance(shape, torch.Size):
             shape = torch.Size(shape)
@@ -843,7 +878,15 @@ class TensorMemoryAllocator(MemoryAllocatorInterface):
         return TensorMemoryObj(
             raw_data=raw_data,
             metadata=MemoryObjMetadata(
-                shape, dtype, block.start, aligned_size, 1, 0, fmt
+                shape,
+                dtype,
+                block.start,
+                aligned_size,
+                1,
+                0,
+                fmt,
+                indexer_kv_shape=indexer_kv_shape,
+                indexer_kv_dtype=indexer_kv_dtype,
             ),
             parent_allocator=self,
         )
@@ -1588,6 +1631,8 @@ class MixedMemoryAllocator(MemoryAllocatorInterface):
         dtype: Optional[torch.dtype],
         fmt: MemoryFormat = MemoryFormat.KV_2LTD,
         allocator_type: Optional[str] = None,
+        indexer_kv_shape: Optional[torch.Size] = None,
+        indexer_kv_dtype: Optional[torch.dtype] = None,
     ) -> Optional[MemoryObj]:
         if fmt == MemoryFormat.BINARY_BUFFER:
             return self.buffer_allocator.allocate(shape, dtype, fmt)
@@ -1598,7 +1643,9 @@ class MixedMemoryAllocator(MemoryAllocatorInterface):
             MemoryFormat.KV_MLA_FMT,
         ]:
             with self.host_mem_lock:
-                return self.pin_allocator.allocate(shape, dtype, fmt, str(self))
+                return self.pin_allocator.allocate(
+                    shape, dtype, fmt, str(self), indexer_kv_shape, indexer_kv_dtype
+                )
         else:
             raise ValueError(f"Unsupported memory format: {fmt}")
 

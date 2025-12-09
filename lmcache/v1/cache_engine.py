@@ -329,6 +329,8 @@ class LMCacheEngine:
             num_tokens = end - start
             kv_shape = self.gpu_connector.get_shape(num_tokens)
             kv_dtype = self.metadata.kv_dtype
+            indexer_kv_shape = self.gpu_connector.get_indexer_shape(num_tokens)
+            indexer_kv_dtype = self.metadata.indexer_kv_dtype
 
             # TODO (Jiayi): should be batched in the future
             memory_obj = self.storage_manager.allocate(
@@ -336,6 +338,8 @@ class LMCacheEngine:
                 kv_dtype,
                 busy_loop=self.force_store_wait,
                 fmt=self.fmt,
+                indexer_kv_shape=indexer_kv_shape,
+                indexer_kv_dtype=indexer_kv_dtype,
             )
             if memory_obj is None:
                 logger.warning(

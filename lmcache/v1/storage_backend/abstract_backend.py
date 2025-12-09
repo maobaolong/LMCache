@@ -318,6 +318,8 @@ class AllocatorBackendInterface(StorageBackendInterface):
         fmt: MemoryFormat = MemoryFormat.KV_2LTD,
         eviction: bool = True,
         busy_loop: bool = True,
+        indexer_kv_shape: Optional[torch.Size] = None,
+        indexer_kv_dtype: Optional[torch.dtype] = None,
     ) -> Optional[MemoryObj]:
         """
         Allocates memory in the backend to hold a tensor of the given shape.
@@ -329,6 +331,10 @@ class AllocatorBackendInterface(StorageBackendInterface):
         :param bool busy_loop: whether to enable a busy loop to wait
             for in-progress store operations to finish and release the
             memory space for retrieve.
+        :param Optional[torch.Size] indexer_kv_shape: The shape of the
+            indexer kv tensor to allocate.
+        :param Optional[torch.dtype] indexer_kv_dtype: The dtype of the
+            indexer kv tensor to allocate.
 
         :return: A MemoryObj wrapping the allocated memory. Returns
             None if the allocation failed.

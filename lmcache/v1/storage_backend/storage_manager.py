@@ -318,6 +318,8 @@ class StorageManager:
         fmt: MemoryFormat = MemoryFormat.KV_2LTD,
         eviction=True,
         busy_loop=True,
+        indexer_kv_shape: Optional[torch.Size] = None,
+        indexer_kv_dtype: Optional[torch.dtype] = None,
     ) -> Optional[MemoryObj]:
         """
         Allocate memory object with memory allocator.
@@ -327,7 +329,13 @@ class StorageManager:
         # disk in a similar way as CPU.
         assert self.allocator_backend is not None
         return self.allocator_backend.allocate(
-            shape, dtype, fmt, eviction=eviction, busy_loop=busy_loop
+            shape,
+            dtype,
+            fmt,
+            eviction=eviction,
+            busy_loop=busy_loop,
+            indexer_kv_shape=indexer_kv_shape,
+            indexer_kv_dtype=indexer_kv_dtype,
         )
 
     @_lmcache_nvtx_annotate

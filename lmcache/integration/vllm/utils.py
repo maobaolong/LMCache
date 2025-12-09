@@ -110,6 +110,25 @@ def mla_enabled(model_config: "ModelConfig") -> bool:
     )
 
 
+def is_v32(model_config: "ModelConfig") -> bool:
+    return hasattr(model_config, "hf_config") and hasattr(
+        model_config.hf_config, "index_topk"
+    )
+
+
+def get_indexer_dtype(model_config: "ModelConfig") -> torch.dtype:
+    # TODO: get from config
+    return torch.uint8
+
+
+def get_indexer_head_size(model_config: "ModelConfig") -> int:
+    hf_config = model_config.hf_config
+    head_dim = hf_config.index_head_dim
+    # TODO: get from config
+    quant_block_size = 128
+    return head_dim + head_dim // quant_block_size * 4
+
+
 def create_lmcache_metadata(
     vllm_config=None,
     model_config=None,

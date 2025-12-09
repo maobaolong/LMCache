@@ -50,6 +50,9 @@ from lmcache.integration.vllm.utils import (
     apply_mm_hashes_to_token_ids,
     create_lmcache_metadata,
     extract_mm_features,
+    get_indexer_dtype,
+    get_indexer_head_size,
+    is_v32,
     lmcache_get_or_create_config,
     mla_enabled,
 )
@@ -63,6 +66,7 @@ from lmcache.v1.gpu_connector import (
     GPUConnectorInterface,
     VLLMBufferLayerwiseGPUConnector,
     VLLMPagedMemGPUConnectorV2,
+    VLLMPagedMemGPUConnectorWithDSA,
     VLLMPagedMemLayerwiseGPUConnector,
 )
 from lmcache.v1.internal_api_server.api_server import InternalAPIServer
@@ -501,6 +505,13 @@ def _init_lmcache_engine(
     ):
         raise ValueError("MLA only works with naive serde mode..")
 
+    use_dsa = is_v32(model_config)
+    if use_dsa:
+        if not use_mla:
+            raise ValueError("DSA only works with MLA.")
+        if lmcache_config.use_layerwise:
+            raise ValueError("DSA only works with non-layerwise mode.")
+
     # construct kv shape (for mem pool)
     num_layer = model_config.get_num_layers(parallel_config)
     num_draft_layers = _calculate_draft_layers(vllm_config, model_config)
@@ -510,11 +521,28 @@ def _init_lmcache_engine(
     num_kv_head = model_config.get_num_kv_heads(parallel_config)
     head_size = model_config.get_head_size()
     kv_shape = (num_layer, 1 if use_mla else 2, chunk_size, num_kv_head, head_size)
+    # this is for dsa
+    indexer_kv_dtype = None
+    indexer_head_size = None
+    indexer_kv_shape = None
+    if use_dsa:
+        indexer_kv_dtype = get_indexer_dtype(model_config)
+        indexer_head_size = get_indexer_head_size(model_config)
+        indexer_kv_shape = (
+            num_layer,
+            1 if use_mla else 2,
+            chunk_size,
+            num_kv_head,
+            indexer_head_size,
+        )
+
     logger.info(
         f"num_layer: {num_layer}, chunk_size: {chunk_size}, "
         f"num_kv_head (per gpu): {num_kv_head}, head_size: {head_size}, "
         f"hidden_dim (D) for KV (per gpu): {num_kv_head * head_size}, "
-        f"use mla: {use_mla}, kv shape: {kv_shape}, num_draft_layers:{num_draft_layers}"
+        f"use mla: {use_mla}, kv shape: {kv_shape}, num_draft_layers:{num_draft_layers}, "
+        f"use dsa: {use_dsa}, indexer_kv_dtype: {indexer_kv_dtype}, "
+        f"indexer_head_size: {indexer_head_size}, indexer_kv_shape: {indexer_kv_shape}"
     )
 
     # Change current device.
@@ -543,6 +571,9 @@ def _init_lmcache_engine(
         use_mla,
         role,
         served_model_name=model_config.served_model_name,
+        use_dsa=use_dsa,
+        indexer_kv_dtype=indexer_kv_dtype,
+        indexer_kv_shape=indexer_kv_shape,
     )
 
     use_gpu = need_gpu_interm_buffer(lmcache_config)
@@ -583,6 +614,13 @@ def _init_lmcache_engine(
                 device=device,
                 use_mla=use_mla,
             )
+        tpg = get_tp_group()
+    elif use_dsa:
+        vllm_gpu_connector = VLLMPagedMemGPUConnectorWithDSA(
+            metadata,
+            device,
+            use_gpu,
+        )
         tpg = get_tp_group()
     else:
         if current_platform.is_cuda_alike():

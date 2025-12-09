@@ -39,6 +39,12 @@ class LMCacheEngineMetadata:
     # TODO(baoloongmao): first_rank should be configurable
     first_rank = 0
     served_model_name: Optional[str] = None
+    """ whether to use DSA"""
+    use_dsa: bool = False
+    """ the data type of indexer kv tensors """
+    indexer_kv_dtype: Optional[torch.dtype] = None
+    """ the shape of indexer kv tensors """
+    indexer_kv_shape: Optional[tuple[int, int, int, int, int]] = None
 
     def is_first_rank(self) -> bool:
         """Check if the current worker is the first rank"""
