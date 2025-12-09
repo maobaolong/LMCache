@@ -836,7 +836,9 @@ class TensorMemoryAllocator(MemoryAllocatorInterface):
 
         assert dtype is not None, "dtype must be specified"
         # Calculate the size of the tensor
-        raw_size = TensorMemoryAllocator._Compute_raw_size(shape, dtype)
+        raw_size = TensorMemoryAllocator._Compute_raw_size(
+            shape, dtype, indexer_kv_shape, indexer_kv_dtype
+        )
         if raw_size % self.align_bytes != 0:
             aligned_size = TensorMemoryAllocator._Compute_aligned_size(
                 raw_size, self.align_bytes
