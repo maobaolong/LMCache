@@ -3,7 +3,8 @@
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Generator, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Generator, List, Optional, Union
+import hashlib
 import os
 
 # Third Party
@@ -987,11 +988,28 @@ class LMCacheConnectorV1Impl:
                         slot_mapping=slot_mapping[:lmcache_cached_tokens],
                     )
                 else:
+                    # Log slot_mapping for kvcache check API
+                    layerwise_retrieve_slot_mapping = slot_mapping[
+                        :lmcache_cached_tokens
+                    ]
+                    logger.debug(
+                        "[KVCache Check] Layerwise retrieve request %s, tokens=%d, "
+                        "slot_mapping (first 10): %s, slot_mapping (last 10): %s",
+                        request.req_id,
+                        lmcache_cached_tokens,
+                        layerwise_retrieve_slot_mapping[:10].tolist()
+                        if len(layerwise_retrieve_slot_mapping) >= 10
+                        else layerwise_retrieve_slot_mapping.tolist(),
+                        layerwise_retrieve_slot_mapping[-10:].tolist()
+                        if len(layerwise_retrieve_slot_mapping) >= 10
+                        else layerwise_retrieve_slot_mapping.tolist(),
+                    )
+
                     layerwise_retriever = self.lmcache_engine.retrieve_layer(
                         tokens[:lmcache_cached_tokens],
                         token_mask[:lmcache_cached_tokens],
                         kvcaches=kvcaches,
-                        slot_mapping=slot_mapping[:lmcache_cached_tokens],
+                        slot_mapping=layerwise_retrieve_slot_mapping,
                         sync=sync,
                     )
                     # NOTE: retrieve for two layers at the first layer
@@ -999,11 +1017,26 @@ class LMCacheConnectorV1Impl:
                     next(layerwise_retriever)
                     self.layerwise_retrievers.append(layerwise_retriever)
             else:
+                # Log slot_mapping for kvcache check API
+                retrieve_slot_mapping = slot_mapping[:lmcache_cached_tokens]
+                logger.debug(
+                    "[KVCache Check] Retrieve request %s, tokens=%d, "
+                    "slot_mapping (first 10): %s, slot_mapping (last 10): %s",
+                    request.req_id,
+                    lmcache_cached_tokens,
+                    retrieve_slot_mapping[:10].tolist()
+                    if len(retrieve_slot_mapping) >= 10
+                    else retrieve_slot_mapping.tolist(),
+                    retrieve_slot_mapping[-10:].tolist()
+                    if len(retrieve_slot_mapping) >= 10
+                    else retrieve_slot_mapping.tolist(),
+                )
+
                 ret_token_mask = self.lmcache_engine.retrieve(
                     tokens[:lmcache_cached_tokens],
                     token_mask[:lmcache_cached_tokens],
                     kvcaches=kvcaches,
-                    slot_mapping=slot_mapping[:lmcache_cached_tokens],
+                    slot_mapping=retrieve_slot_mapping,
                     request_configs=request.request_configs,
                     req_id=request.req_id,
                     skip_contains_check=True,
@@ -1223,6 +1256,20 @@ class LMCacheConnectorV1Impl:
                     request.req_id,
                 )
 
+                # Log slot_mapping for kvcache check API
+                logger.debug(
+                    "[KVCache Check] Layerwise store request %s, tokens=%d, "
+                    "slot_mapping (first 10): %s, slot_mapping (last 10): %s",
+                    request.req_id,
+                    len(token_ids),
+                    slot_mapping[:10].tolist()
+                    if len(slot_mapping) >= 10
+                    else slot_mapping.tolist(),
+                    slot_mapping[-10:].tolist()
+                    if len(slot_mapping) >= 10
+                    else slot_mapping.tolist(),
+                )
+
                 # TODO (Jiayi): need to make layerwise storing
                 # compatible with disagg spec
                 layerwise_storer = self.lmcache_engine.store_layer(
@@ -1327,6 +1374,20 @@ class LMCacheConnectorV1Impl:
                     token_ids = token_ids[:aligned_token_len]
                     store_mask = store_mask[:aligned_token_len]
                     slot_mapping = slot_mapping[:aligned_token_len]
+
+            # Log slot_mapping for kvcache check API
+            logger.debug(
+                "[KVCache Check] Store request %s, tokens=%d, "
+                "slot_mapping (first 10): %s, slot_mapping (last 10): %s",
+                request.req_id,
+                len(token_ids),
+                slot_mapping[:10].tolist()
+                if len(slot_mapping) >= 10
+                else slot_mapping.tolist(),
+                slot_mapping[-10:].tolist()
+                if len(slot_mapping) >= 10
+                else slot_mapping.tolist(),
+            )
 
             self.lmcache_engine.store(
                 token_ids,
@@ -1833,3 +1894,88 @@ class LMCacheConnectorV1Impl:
         if self.lmcache_engine is not None:
             return self.lmcache_engine.get_kv_events()
         return []
+
+    def compute_kvcache_checksums(
+        self, slot_indices: List[int], chunk_size: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Compute MD5 checksums for kvcaches at specified slot positions.
+
+        This method is used by the kvcache check API to verify that stored
+        and retrieved kvcaches are identical.
+
+        Args:
+            slot_indices: List of slot indices to compute checksums for.
+            chunk_size: Optional chunk size for computing per-chunk checksums.
+                If provided, will also compute checksums for each chunk.
+                If None, only layer-level checksums are computed.
+
+        Returns:
+            Dictionary containing:
+            - 'layer_checksums': mapping layer names to their overall checksums
+            - 'chunk_checksums': (if chunk_size provided) mapping layer names to
+              list of per-chunk checksums
+            Returns None if kv_caches is not available.
+        """
+        if not self.kv_caches:
+            logger.warning("kv_caches is empty, cannot compute checksums")
+            return None
+
+        layer_checksums: Dict[str, str] = {}
+        chunk_checksums: Dict[str, List[str]] = {}
+
+        for layer_name, kv_tensor in self.kv_caches.items():
+            # kv_tensor shape is typically [num_blocks, block_size, num_heads, head_dim]
+            # or similar. We extract data at the specified slot indices.
+            try:
+                # Convert slot_indices to tensor for indexing
+                slot_tensor = torch.tensor(
+                    slot_indices, dtype=torch.long, device=kv_tensor.device
+                )
+
+                # Extract kv data at specified slot positions
+                # Assuming the first dimension is num_blocks * block_size or
+                # the slot dimension
+                kv_at_slots = kv_tensor.view(-1, *kv_tensor.shape[2:])[slot_tensor]
+
+                # Compute overall layer checksum
+                tensor_bytes = kv_at_slots.detach().cpu().contiguous().numpy().tobytes()
+                checksum = hashlib.md5(tensor_bytes).hexdigest()
+                layer_checksums[layer_name] = checksum
+
+                # Compute per-chunk checksums if chunk_size is provided
+                if chunk_size is not None and chunk_size > 0:
+                    num_slots = len(slot_indices)
+                    num_chunks = (num_slots + chunk_size - 1) // chunk_size
+                    chunk_checksum_list: List[str] = []
+
+                    for chunk_idx in range(num_chunks):
+                        start_idx = chunk_idx * chunk_size
+                        end_idx = min(start_idx + chunk_size, num_slots)
+                        chunk_data = kv_at_slots[start_idx:end_idx]
+                        chunk_bytes = (
+                            chunk_data.detach().cpu().contiguous().numpy().tobytes()
+                        )
+                        chunk_checksum = hashlib.md5(chunk_bytes).hexdigest()
+                        chunk_checksum_list.append(chunk_checksum)
+
+                    chunk_checksums[layer_name] = chunk_checksum_list
+
+            except Exception as e:
+                logger.error(
+                    "Failed to compute checksum for layer %s: %s", layer_name, str(e)
+                )
+                layer_checksums[layer_name] = "error: %s" % str(e)
+                if chunk_size is not None:
+                    chunk_checksums[layer_name] = ["error: %s" % str(e)]
+
+        result: Dict[str, Any] = {"layer_checksums": layer_checksums}
+        if chunk_size is not None:
+            result["chunk_checksums"] = chunk_checksums
+            result["chunk_size"] = chunk_size
+            result["num_chunks"] = (
+                (len(slot_indices) + chunk_size - 1) // chunk_size
+                if slot_indices
+                else 0
+            )
+
+        return result
