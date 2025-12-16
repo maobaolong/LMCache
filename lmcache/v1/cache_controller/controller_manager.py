@@ -33,6 +33,10 @@ from lmcache.v1.cache_controller.message import (  # isort: skip
     DecompressMsg,
     DeRegisterMsg,
     ErrorMsg,
+    FullSyncBatchMsg,
+    FullSyncEndMsg,
+    FullSyncStartMsg,
+    FullSyncStatusMsg,
     HealthMsg,
     HeartbeatMsg,
     KVAdmitMsg,
@@ -168,6 +172,10 @@ class LMCacheControllerManager:
                     await self.kv_controller.evict(evict_msg)
                 else:
                     logger.error("Unknown operation type: %s", op.op_type)
+        elif isinstance(msg, FullSyncBatchMsg):
+            await self.kv_controller.handle_full_sync_batch(msg)
+        elif isinstance(msg, FullSyncEndMsg):
+            await self.kv_controller.handle_full_sync_end(msg)
         else:
             logger.error(f"Unknown worker message type: {msg}")
 
@@ -179,6 +187,10 @@ class LMCacheControllerManager:
             ret_msg = await self.kv_controller.batched_p2p_lookup(msg)
         elif isinstance(msg, HeartbeatMsg):
             ret_msg = await self.reg_controller.heartbeat(msg)
+        elif isinstance(msg, FullSyncStartMsg):
+            ret_msg = await self.kv_controller.handle_full_sync_start(msg)
+        elif isinstance(msg, FullSyncStatusMsg):
+            ret_msg = await self.kv_controller.handle_full_sync_status(msg)
         else:
             logger.error(f"Unknown worker request message type: {msg}")
             ret_msg = ErrorMsg(error=f"Unknown message type: {type(msg)}")
