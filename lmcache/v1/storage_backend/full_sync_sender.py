@@ -185,7 +185,6 @@ class FullSyncSender:
 
         self._is_syncing = True
         self._current_sync_id = None
-        freeze_mode_entered = False
 
         logger.info(
             "Starting full sync for worker %s:%s, reason: %s",
@@ -201,9 +200,7 @@ class FullSyncSender:
             await asyncio.sleep(delay)
 
             # Step 2: Enter freeze mode
-            logger.info("Entering hot_cache_freeze_mode")
             self.lmcache_engine.freeze(True)
-            freeze_mode_entered = True
 
             # Step 3: Get all keys from hot cache
             keys = self._get_all_hot_cache_keys()
@@ -301,9 +298,7 @@ class FullSyncSender:
 
         finally:
             # Always clean up state, regardless of success or failure
-            if freeze_mode_entered:
-                logger.info("Exiting hot_cache_freeze_mode")
-                self.lmcache_engine.freeze(False)
+            self.lmcache_engine.freeze(False)
             self._is_syncing = False
             self._current_sync_id = None
 

@@ -115,6 +115,7 @@ class RegistrationController:
                 "Instance-worker %s already registered, skip registration",
                 (instance_id, worker_id),
             )
+            self.registry.clear_worker_kv(instance_id, worker_id)
             return
 
         peer_init_url = msg.peer_init_url
@@ -206,6 +207,18 @@ class RegistrationController:
             await self.register(register_msg)
             # New worker needs full sync
             commands.append(FullSyncCommand(reason="worker_re_registered"))
+        else:
+            # Check if full sync is needed (e.g., controller restart)
+            if self.kv_controller is not None and hasattr(
+                self.kv_controller, "full_sync_tracker"
+            ):
+                should_sync, reason = (
+                    self.kv_controller.full_sync_tracker.should_request_full_sync(
+                        instance_id, worker_id
+                    )
+                )
+                if should_sync:
+                    commands.append(FullSyncCommand(reason=reason))
 
         return HeartbeatRetMsg(commands=commands)
 

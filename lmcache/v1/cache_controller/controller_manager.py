@@ -70,6 +70,8 @@ class LMCacheControllerManager:
         controller_urls: dict[str, str],
         health_check_interval: int,
         lmcache_worker_timeout: int,
+        full_sync_completion_threshold: float = 0.8,
+        full_sync_timeout_s: float = 300.0,
     ):
         # Initialize stats logger
         prometheus_labels = {
@@ -108,7 +110,11 @@ class LMCacheControllerManager:
                 bind_or_connect="bind",
             )
         self.reg_controller = RegistrationController()
-        self.kv_controller = KVController(self.reg_controller.registry)
+        self.kv_controller = KVController(
+            registry=self.reg_controller.registry,
+            full_sync_completion_threshold=full_sync_completion_threshold,
+            full_sync_timeout_s=full_sync_timeout_s,
+        )
 
         # Cluster executor
         self.cluster_executor = LMCacheClusterExecutor(
