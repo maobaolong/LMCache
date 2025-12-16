@@ -20,15 +20,13 @@ from lmcache.v1.storage_backend.local_cpu_backend import LocalCPUBackend
 
 logger = init_logger(__name__)
 
-METADATA_BYTES_LEN = 28
-
 
 class FSConnector(RemoteConnector):
     """File system based connector that stores data in local files.
 
     Data is stored in the following format:
     - Each key is stored as a separate file
-    - File content: metadata (METADATA_BYTES_LEN bytes) + serialized data
+    - File content: metadata (self.remote_metadata_bytes) + serialized data
     """
 
     def __init__(
@@ -72,9 +70,11 @@ class FSConnector(RemoteConnector):
         )
 
         logger.info(
-            f"Initialized FSConnector with base paths {self.base_paths}, "
-            f"relative tmp dir: {self.relative_tmp_dir}, "
-            f"read ahead size: {self.read_ahead_size}"
+            "Initialized FSConnector with base paths %s, relative tmp dir: %s, "
+            "read ahead size: %s",
+            self.base_paths,
+            self.relative_tmp_dir,
+            self.read_ahead_size,
         )
         # Create directories for all paths
         for path in self.base_paths:
@@ -134,7 +134,7 @@ class FSConnector(RemoteConnector):
                 if self.save_chunk_meta:
                     # Read metadata buffer first to get shape, dtype, fmt
                     # to be able to allocate memory object for the data and read into it
-                    md_buffer = bytearray(METADATA_BYTES_LEN)
+                    md_buffer = bytearray(self.remote_metadata_bytes)
                     num_read = await f.readinto(md_buffer)
                     if num_read != len(md_buffer):
                         raise RuntimeError(
@@ -142,13 +142,15 @@ class FSConnector(RemoteConnector):
                         )
 
                     # Deserialize metadata and allocate memory
-                    metadata = RemoteMetadata.deserialize(md_buffer)
+                    metadata = RemoteMetadata.deserialize(
+                        md_buffer, self.remote_metadata_fmt
+                    )
                     memory_obj = self.local_cpu_backend.allocate(
-                        metadata.shape, metadata.dtype, metadata.fmt
+                        metadata.shapes, metadata.dtypes, metadata.fmt
                     )
                 else:
                     memory_obj = self.local_cpu_backend.allocate(
-                        self.meta_shape, self.meta_dtype, self.meta_fmt
+                        self.meta_shapes, self.meta_dtypes, self.meta_fmt
                     )
                 if memory_obj is None:
                     logger.debug("Memory allocation failed during async disk load.")
@@ -210,8 +212,8 @@ class FSConnector(RemoteConnector):
             metadata = (
                 RemoteMetadata(
                     len(buffer),
-                    memory_obj.get_shape(),
-                    memory_obj.get_dtype(),
+                    memory_obj.get_shapes(),
+                    memory_obj.get_dtypes(),
                     memory_obj.get_memory_format(),
                 )
                 if self.save_chunk_meta
@@ -221,7 +223,7 @@ class FSConnector(RemoteConnector):
             # Write to file (metadata + data)
             async with aiofiles.open(temp_path, "wb") as f:
                 if metadata is not None:
-                    await f.write(metadata.serialize())
+                    await f.write(metadata.serialize(self.remote_metadata_fmt))
                 await f.write(buffer)
 
             # Atomically rename temp file to final destination
