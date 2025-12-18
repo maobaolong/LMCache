@@ -12,6 +12,7 @@ import os
 import torch
 
 # First Party
+from lmcache.config import LMCacheEngineMetadata
 from lmcache.logging import init_logger
 from lmcache.utils import CacheEngineKey
 from lmcache.v1.config import LMCacheEngineConfig
@@ -103,6 +104,19 @@ class MooncakestoreConnector(RemoteConnector):
         local_cpu_backend: LocalCPUBackend,
         lmcache_config: Optional[LMCacheEngineConfig],
     ):
+        self.host = host
+        self.port = port
+        self.dev_name = dev_name
+        self.loop = loop
+        self.local_cpu_backend = local_cpu_backend
+
+    def post_init(
+        self,
+        lmcache_config: LMCacheEngineConfig,
+        metadata: LMCacheEngineMetadata,
+    ):
+        super().post_init(lmcache_config, metadata)
+
         try:
             # Third Party
             from mooncake.store import (
@@ -130,10 +144,10 @@ class MooncakestoreConnector(RemoteConnector):
                 raise ValueError("MOONCAKE_CONFIG_PATH/lmcache_config must be provided")
 
             if not self.config.master_server_address:
-                if host != "" and port != 0:
-                    self.config.master_server_address = host + ":" + str(port)
-            if dev_name != "":
-                self.config.device_name = dev_name
+                if self.host != "" and self.port != 0:
+                    self.config.master_server_address = self.host + ":" + str(self.port)
+            if self.dev_name != "":
+                self.config.device_name = self.dev_name
             logger.info("Mooncake Configuration loaded. config: %s", self.config)
 
             # Check if storage_root_dir exists and set environment variable
@@ -157,7 +171,7 @@ class MooncakestoreConnector(RemoteConnector):
 
             try:
                 numa_mapping = getattr(
-                    local_cpu_backend.memory_allocator, "numa_mapping", None
+                    self.local_cpu_backend.memory_allocator, "numa_mapping", None
                 )
                 if numa_mapping is None and lmcache_config is not None:
                     numa_mapping = NUMADetector.get_numa_mapping(lmcache_config)
@@ -203,8 +217,6 @@ class MooncakestoreConnector(RemoteConnector):
             logger.error("An error occurred while loading the configuration: %s", exc)
             raise
 
-        self.loop = loop
-        self.local_cpu_backend = local_cpu_backend
         self.registered_buffer_ptr = None
 
         # Initialize ReplicateConfig

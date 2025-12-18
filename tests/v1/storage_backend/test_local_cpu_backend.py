@@ -71,7 +71,9 @@ def create_test_memory_obj(shape=(2, 16, 8, 128), dtype=torch.bfloat16) -> Memor
 def local_cpu_backend(memory_allocator):
     """Create a LocalCPUBackend for testing."""
     config = create_test_config()
-    return LocalCPUBackend(config=config, memory_allocator=memory_allocator)
+    backend = LocalCPUBackend(config=config, memory_allocator=memory_allocator)
+    backend.post_init()
+    return backend
 
 
 @pytest.fixture

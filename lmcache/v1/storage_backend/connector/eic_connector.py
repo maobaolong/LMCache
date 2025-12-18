@@ -14,8 +14,10 @@ import eic
 import yaml
 
 # First Party
+from lmcache.config import LMCacheEngineMetadata
 from lmcache.logging import init_logger
 from lmcache.utils import CacheEngineKey, _lmcache_nvtx_annotate
+from lmcache.v1.config import LMCacheEngineConfig
 from lmcache.v1.memory_management import MemoryObj, MixedMemoryAllocator
 from lmcache.v1.protocol import RemoteMetadata
 from lmcache.v1.storage_backend.connector.base_connector import RemoteConnector
@@ -195,6 +197,13 @@ class EICConnector(RemoteConnector):
             logger.info(f"init eic client success, ret: {ret}")
 
         self.trans_type = eic.TransportType(eic_trans_type)
+
+    def post_init(
+        self,
+        config: LMCacheEngineConfig,
+        metadata: LMCacheEngineMetadata,
+    ):
+        super().post_init(config, metadata)
 
         # Register memory in rdma and gdr scenarios
         if self.trans_type == eic.TransportType.TRANSPORT_GDR:

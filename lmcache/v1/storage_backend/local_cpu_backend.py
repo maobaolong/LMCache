@@ -64,11 +64,7 @@ class LocalCPUBackend(AllocatorBackendInterface):
         # test compatibility
         # TODO: fix the tests to get rid the memory allocator
         assert metadata is not None or memory_allocator is not None
-        self.memory_allocator = (
-            self.initialize_allocator(config, metadata)  # type: ignore
-            if memory_allocator is None
-            else memory_allocator
-        )
+        self.memory_allocator = memory_allocator
         self.lmcache_worker = lmcache_worker
         self.instance_id = config.lmcache_instance_id
         self.cpu_lock = threading.Lock()
@@ -102,6 +98,13 @@ class LocalCPUBackend(AllocatorBackendInterface):
             logger.warning("Controller message sender is not initialized")
 
         self._setup_metrics()
+
+    def post_init(self):
+        logger.info("Post initializing local cpu backend")
+        if self.memory_allocator is None:
+            self.memory_allocator = self.initialize_allocator(
+                self.config, self.metadata
+            )
 
     def _setup_metrics(self):
         prometheus_logger = PrometheusLogger.GetInstanceOrNone()
@@ -356,18 +359,11 @@ class LocalCPUBackend(AllocatorBackendInterface):
             # TODO(baoloongmao): Add lazy memory allocator support for P2P mode
             # For now, keep the original P2P implementation
             assert metadata is not None
-            meta_shape = torch.Size(metadata.kv_shape)
-            # TODO(Jiayi): remove this hardcode
-            new_shape = torch.Size(
-                [
-                    meta_shape[1],
-                    meta_shape[0],
-                    meta_shape[2],
-                    meta_shape[3] * meta_shape[4],
-                ]
-            )
+            shapes = metadata.get_shapes()
+            dtypes = metadata.get_dtypes()
+
             paged_mem_allocator = PagedCpuGpuMemoryAllocator()
-            chunk_size_bytes = get_size_bytes([new_shape], [metadata.kv_dtype])
+            chunk_size_bytes = get_size_bytes(shapes, dtypes)
             origin_cpu_size_bytes = int(cpu_size * 1024**3)
             align_cpu_size_bytes = (
                 origin_cpu_size_bytes // chunk_size_bytes * chunk_size_bytes
@@ -378,8 +374,8 @@ class LocalCPUBackend(AllocatorBackendInterface):
             )
             paged_mem_allocator.init_cpu_memory_allocator(
                 align_cpu_size_bytes,
-                shapes=[new_shape],
-                dtypes=[metadata.kv_dtype],
+                shapes=shapes,
+                dtypes=dtypes,
                 fmt=MemoryFormat.KV_2LTD,  # TODO: remove this hardcode
                 numa_mapping=numa_mapping,
             )
@@ -449,6 +445,7 @@ class LocalCPUBackend(AllocatorBackendInterface):
         - many retrieves happen concurrently
         (we use the async serializer to handle this)
         """
+        assert self.memory_allocator is not None
         logger.debug(
             f"Allocating memory in local cpu backend with busy loop: {busy_loop}"
         )
@@ -553,6 +550,7 @@ class LocalCPUBackend(AllocatorBackendInterface):
         - many retrieves happen concurrently
         (we use the async serializer to handle this)
         """
+        assert self.memory_allocator is not None
         logger.debug(
             f"Batched allocating memory in local cpu backend"
             f" with busy loop: {busy_loop}"
@@ -696,7 +694,9 @@ class LocalCPUBackend(AllocatorBackendInterface):
         chunk_bytes = self.get_full_chunk_size()
         # add alignment overhead
         # (MixedMemoryAllocator uses TensorMemoryAllocator with 4KB alignment)
-        assert hasattr(self.memory_allocator, "align_bytes")
+        assert self.memory_allocator is not None and hasattr(
+            self.memory_allocator, "align_bytes"
+        )
         alignment = self.memory_allocator.align_bytes
         aligned_chunk_bytes = ((chunk_bytes + alignment - 1) // alignment) * alignment
 
@@ -741,6 +741,7 @@ class LocalCPUBackend(AllocatorBackendInterface):
         return self.memory_allocator
 
     def close(self) -> None:
+        assert self.memory_allocator is not None
         if self.batched_msg_sender is not None:
             self.batched_msg_sender.close()
         self.memory_allocator.close()
