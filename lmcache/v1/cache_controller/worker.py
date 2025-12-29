@@ -256,6 +256,13 @@ class LMCacheWorker:
         )
 
     def _create_heartbeat_socket(self):
+        logger.info(
+            "Creating heartbeat socket to connect to: %s, "
+            "recv_timeout: %dms, send_timeout: %dms",
+            self.controller_heartbeat_url,
+            self.socket_recv_timeout_ms,
+            self.socket_send_timeout_ms,
+        )
         self.heartbeat_socket = get_zmq_socket_with_timeout(
             self.context,
             self.controller_heartbeat_url,
@@ -366,7 +373,13 @@ class LMCacheWorker:
             ret_msg = msgspec.msgpack.decode(serialized_ret_msg, type=Msg)
             return ret_msg
         except zmq.Again as e:
-            logger.error("Heartbeat timeout occurred, recreating socket. Error: %s", e)
+            logger.error(
+                "Heartbeat timeout occurred, recreating socket. "
+                "Error: %s, heartbeat_url: %s, recv_timeout: %dms",
+                e,
+                self.controller_heartbeat_url,
+                self.socket_recv_timeout_ms,
+            )
             self._recreate_heartbeat_socket()
             return HeartbeatRetMsg()
         except zmq.ZMQError as e:
