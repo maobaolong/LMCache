@@ -407,6 +407,7 @@ class LMCacheWorker:
             and self.heartbeat_socket is not None
         )
         if enable_heartbeat:
+            await asyncio.sleep(self.config.lmcache_worker_heartbeat_delay_time)
             logger.info(
                 "Start heartbeat in %s : %s, delay time: %ss, heartbeat time: %ss",
                 self.lmcache_instance_id,
@@ -414,7 +415,6 @@ class LMCacheWorker:
                 self.config.lmcache_worker_heartbeat_delay_time,
                 self.config.lmcache_worker_heartbeat_time,
             )
-            await asyncio.sleep(self.config.lmcache_worker_heartbeat_delay_time)
             while True:
                 # Send heartbeat via dedicated heartbeat socket
                 heartbeat_msg = HeartbeatMsg(
