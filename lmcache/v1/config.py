@@ -328,6 +328,17 @@ _CONFIG_DEFINITIONS: dict[str, dict[str, Any]] = {
         "default": 3000,
         "env_converter": int,
     },
+    "min_retrieve_tokens": {
+        "type": int,
+        "default": 0,
+        "env_converter": int,
+        "description": (
+            "Minimum number of hit tokens required to perform retrieve. "
+            "If hit tokens < min_retrieve_tokens, skip retrieve but the "
+            "actual hit count is still used for skip_leading_tokens to avoid "
+            "re-storing existing chunks. Default is 0 (disabled)."
+        ),
+    },
     "hit_miss_ratio": {
         "type": Optional[float],
         "default": None,
