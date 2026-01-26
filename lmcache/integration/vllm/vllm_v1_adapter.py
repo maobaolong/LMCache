@@ -1280,13 +1280,29 @@ class LMCacheConnectorV1Impl:
         if num_external_hit_tokens == request.num_tokens:
             need_to_allocate -= 1
 
-        logger.info(
-            "Reqid: %s, Total tokens %d, LMCache hit tokens: %d, need to load: %d",
-            req_id,
-            request.num_tokens,
-            num_external_hit_tokens,
-            need_to_allocate,
-        )
+        # Check if hit tokens meet the minimum for retrieve
+        # If below minimum, skip retrieve but still record hit tokens
+        # for skip_leading_tokens to avoid re-storing existing chunks
+        min_retrieve = self.config.min_retrieve_tokens
+        below_min_retrieve = min_retrieve > 0 and num_external_hit_tokens < min_retrieve
+
+        if below_min_retrieve:
+            logger.info(
+                "Reqid: %s, Total tokens %d, LMCache hit: %d < min_retrieve %d, "
+                "skip retrieve but record for save skip",
+                req_id,
+                request.num_tokens,
+                num_external_hit_tokens,
+                min_retrieve,
+            )
+        else:
+            logger.info(
+                "Reqid: %s, Total tokens %d, LMCache hit tokens: %d, need to load: %d",
+                req_id,
+                request.num_tokens,
+                num_external_hit_tokens,
+                need_to_allocate,
+            )
 
         self.load_specs[req_id] = LoadSpec(
             vllm_cached_tokens=num_computed_tokens,
@@ -1294,7 +1310,7 @@ class LMCacheConnectorV1Impl:
             can_load=False,
         )
 
-        if need_to_allocate <= 0:
+        if below_min_retrieve or need_to_allocate <= 0:
             return 0
 
         # TODO: Align to vLLM block size. Should test whether it can be removed
