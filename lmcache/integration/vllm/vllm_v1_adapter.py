@@ -491,7 +491,7 @@ class LMCacheConnectorV1Impl:
                     config_key = key[8:]  # Remove "lmcache." prefix
                     if validate_and_set_config_value(config, config_key, value):
                         logger.info(
-                            "Updated config %s from vLLM extra config: %s",
+                            "Updated config %s to vLLM extra config: %s",
                             config_key,
                             value,
                         )
