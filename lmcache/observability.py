@@ -1488,9 +1488,9 @@ class PrometheusLogger:
             labelnames=labelnames,
             multiprocess_mode="livemostrecent",
         ).labels(**self.labels)
-        self.interval_get_blocking_failed_count = self._gauge_cls(
-            name="lmcache:interval_get_blocking_failed_count",
-            documentation="The number of interval get blocking failed",
+        self.interval_remote_failed_count = self._gauge_cls(
+            name="lmcache:interval_remote_failed_count",
+            documentation="The number of interval remote failed",
             labelnames=labelnames,
             multiprocess_mode="livemostrecent",
         ).labels(**self.labels)

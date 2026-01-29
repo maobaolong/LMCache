@@ -40,6 +40,7 @@ class RemoteBackend(StorageBackendInterface):
 
         self.remote_url = config.remote_url
         self.blocking_timeout_secs = config.blocking_timeout_secs
+        self.contains_timeout_secs = config.contains_timeout_secs
 
         self.local_cpu_backend = local_cpu_backend
 
@@ -86,7 +87,7 @@ class RemoteBackend(StorageBackendInterface):
 
         self._setup_metrics()
 
-        self._interval_get_blocking_failed_count = 0
+        self._interval_remote_failed_count = 0
 
     def _setup_metrics(self):
         prometheus_logger = PrometheusLogger.GetInstanceOrNone()
@@ -94,8 +95,8 @@ class RemoteBackend(StorageBackendInterface):
             prometheus_logger.remote_put_task_num.set_function(
                 lambda: len(self.put_tasks)
             )
-            prometheus_logger.interval_get_blocking_failed_count.set_function(
-                lambda: self._interval_get_blocking_failed_count
+            prometheus_logger.interval_remote_failed_count.set_function(
+                lambda: self._interval_remote_failed_count
             )
 
     def __str__(self):
@@ -143,19 +144,21 @@ class RemoteBackend(StorageBackendInterface):
             key = key.with_new_worker_id(0)
 
         try:
-            if self.config.extra_config is not None and self.config.extra_config.get(
-                "use_exists_sync", False
-            ):
+            if self.config.get_extra_config_value("use_exists_sync", False):
                 return self.connection.exists_sync(key)
             else:
                 future = asyncio.run_coroutine_threadsafe(
                     self.connection.exists(key), self.loop
                 )
-                res = future.result()
+                res = future.result(self.contains_timeout_secs)
                 return res
+        except asyncio.TimeoutError:
+            self._interval_remote_failed_count += 1
+            logger.warning("Timeout occurred in contains, return False")
+            return False
         except Exception as e:
-            logger.warning(f"Remote connection failed in contains: {e}")
-            logger.warning("Returning False")
+            self._interval_remote_failed_count += 1
+            logger.warning("Error occurred in contains: %s, return False", e)
             return False
 
     def batched_contains(
@@ -304,7 +307,7 @@ class RemoteBackend(StorageBackendInterface):
         t2 = time.perf_counter()
         self.stats_monitor.update_interval_remote_time_to_get_sync((t2 - t1) * 1000)
         if memory_obj is None:
-            self._interval_get_blocking_failed_count += 1
+            self._interval_remote_failed_count += 1
             return None
         decompressed_memory_obj = self.deserializer.deserialize(memory_obj)
         t3 = time.perf_counter()
@@ -315,9 +318,9 @@ class RemoteBackend(StorageBackendInterface):
         )
         return decompressed_memory_obj
 
-    def get_and_clear_interval_get_blocking_failed_count(self):
-        count = self._interval_get_blocking_failed_count
-        self._interval_get_blocking_failed_count = 0
+    def get_and_clear_interval_remote_failed_count(self):
+        count = self._interval_remote_failed_count
+        self._interval_remote_failed_count = 0
         return count
 
     def batched_get_blocking(
@@ -422,7 +425,7 @@ class RemoteBackend(StorageBackendInterface):
                     self.deserializer.deserialize(memory_obj)
                 )
         if error_happened:
-            self._interval_get_blocking_failed_count += 1
+            self._interval_remote_failed_count += 1
 
         assert len(decompressed_memory_objs) == len(keys), (
             f"keys length: {len(keys)}, "

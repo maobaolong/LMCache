@@ -18,15 +18,17 @@ from lmcache.observability import LMCStatsMonitor
 from lmcache.utils import CacheEngineKey
 from lmcache.v1.health_monitor.base import HealthCheck
 from lmcache.v1.health_monitor.constants import (
+    CHECK_PUT_TIMEOUT_CONFIG_KEY,
+    DEFAULT_CHECK_PUT_TIMEOUT,
     DEFAULT_FALLBACK_POLICY,
-    DEFAULT_GET_BLOCKING_FAILED_THRESHOLD,
     DEFAULT_PING_TIMEOUT,
+    DEFAULT_REMOTE_FAILED_THRESHOLD,
     DEFAULT_WAITING_TIME_FOR_RECOVERY,
     FALLBACK_POLICY_CONFIG_KEY,
-    GET_BLOCKING_FAILED_THRESHOLD_CONFIG_KEY,
     PING_GENERIC_ERROR_CODE,
     PING_TIMEOUT_CONFIG_KEY,
     PING_TIMEOUT_ERROR_CODE,
+    REMOTE_FAILED_THRESHOLD_CONFIG_KEY,
     WAITING_TIME_FOR_RECOVERY_CONFIG_KEY,
     FallbackPolicy,
 )
@@ -59,10 +61,6 @@ class RemoteBackendHealthCheck(HealthCheck):
         backend: "RemoteBackend",
     ):
         self.backend = backend
-        # Get ping timeout from backend config
-        self.ping_timeout = backend.config.get_extra_config_value(
-            PING_TIMEOUT_CONFIG_KEY, DEFAULT_PING_TIMEOUT
-        )
         # Get fallback policy from config
         fallback_policy_str = backend.config.get_extra_config_value(
             FALLBACK_POLICY_CONFIG_KEY, DEFAULT_FALLBACK_POLICY.value
@@ -80,15 +78,6 @@ class RemoteBackendHealthCheck(HealthCheck):
                 self._fallback_policy = DEFAULT_FALLBACK_POLICY
         elif isinstance(fallback_policy_str, FallbackPolicy):
             self._fallback_policy = fallback_policy_str
-        # Get get_blocking failed threshold from backend config
-        self.get_blocking_failed_threshold = backend.config.get_extra_config_value(
-            GET_BLOCKING_FAILED_THRESHOLD_CONFIG_KEY,
-            DEFAULT_GET_BLOCKING_FAILED_THRESHOLD,
-        )
-        # Get waiting time for recovery from backend config
-        self.waiting_time_for_recovery = backend.config.get_extra_config_value(
-            WAITING_TIME_FOR_RECOVERY_CONFIG_KEY, DEFAULT_WAITING_TIME_FOR_RECOVERY
-        )
         self.failure_time: Optional[float] = None
         self._stats_monitor = LMCStatsMonitor.GetOrCreate()
         self._backend_name: Optional[str] = None
@@ -182,36 +171,48 @@ class RemoteBackendHealthCheck(HealthCheck):
         assert connector is not None
 
         if self.failure_time is not None:
+            # Get waiting time for recovery from backend config
+            waiting_time_for_recovery = self.backend.config.get_extra_config_value(
+                WAITING_TIME_FOR_RECOVERY_CONFIG_KEY,
+                DEFAULT_WAITING_TIME_FOR_RECOVERY,
+            )
             if (
-                time.time() - self.failure_time > self.waiting_time_for_recovery
+                time.time() - self.failure_time > waiting_time_for_recovery
                 and self._put_and_get_check()
             ):
-                # recover from get blocking failed
+                # recover from remote failed
                 logger.info(
-                    "Failure time: %s, current time: %s, "
-                    "recover from get blocking failed",
+                    "Failure time: %s, current time: %s, recover from remote failed",
                     self.failure_time,
                     time.time(),
                 )
+                # clear remote failed count
+                self.backend.get_and_clear_interval_remote_failed_count()
+                # clear failure time
                 self.failure_time = None
             else:
                 logger.info(
                     "Failure time: %s, current time: %s, "
-                    "still in get blocking failed recovery window",
+                    "waiting time for recovery: %s, "
+                    "still in remote failed recovery window",
                     self.failure_time,
                     time.time(),
+                    waiting_time_for_recovery,
                 )
                 return False
 
-        # Check read failed
-        get_blocking_failed_count = (
-            self.backend.get_and_clear_interval_get_blocking_failed_count()
+        # Get remote failed threshold from backend config
+        remote_failed_threshold = self.backend.config.get_extra_config_value(
+            REMOTE_FAILED_THRESHOLD_CONFIG_KEY,
+            DEFAULT_REMOTE_FAILED_THRESHOLD,
         )
-        if get_blocking_failed_count >= self.get_blocking_failed_threshold:
+        # Check remote failed
+        remote_failed_count = self.backend.get_and_clear_interval_remote_failed_count()
+        if remote_failed_count >= remote_failed_threshold:
             logger.warning(
-                "Detected %s get blocking failed in interval, threshold: %s",
-                get_blocking_failed_count,
-                self.get_blocking_failed_threshold,
+                "Detected %s remote failed in interval, threshold: %s",
+                remote_failed_count,
+                remote_failed_threshold,
             )
             self.failure_time = time.time()
             return False
@@ -221,12 +222,16 @@ class RemoteBackendHealthCheck(HealthCheck):
             return True
 
         # Check ping
+        # Get ping timeout from backend config
+        ping_timeout = self.backend.config.get_extra_config_value(
+            PING_TIMEOUT_CONFIG_KEY, DEFAULT_PING_TIMEOUT
+        )
         try:
             start_time = time.perf_counter()
             future = asyncio.run_coroutine_threadsafe(
                 connector.ping(), self.backend.loop
             )
-            error_code = future.result(timeout=self.ping_timeout)
+            error_code = future.result(timeout=ping_timeout)
             latency = (time.perf_counter() - start_time) * 1000
 
             # Record ping latency
@@ -281,18 +286,30 @@ class RemoteBackendHealthCheck(HealthCheck):
         fmt = connector.meta_fmt
         put_obj, get_obj = None, None
         try:
-            # put
-            put_obj = self.backend.local_cpu_backend.allocate(shapes, dtypes, fmt)
-            future = self.backend.submit_put_task(key, put_obj)
-            future.result(timeout=self.ping_timeout)
-            # get
-            get_obj = self.backend.get_blocking(key)
-            yield put_obj, get_obj
+            # check exists in put task
+            if self.backend.exists_in_put_tasks(key):
+                logger.warning("Key still exists in put tasks, check failed.")
+                yield None, None
+            else:
+                check_put_timeout = self.backend.config.get_extra_config_value(
+                    CHECK_PUT_TIMEOUT_CONFIG_KEY, DEFAULT_CHECK_PUT_TIMEOUT
+                )
+                # put
+                put_obj = self.backend.local_cpu_backend.allocate(shapes, dtypes, fmt)
+                future = self.backend.submit_put_task(key, put_obj)
+                future.result(timeout=check_put_timeout)
+                # exists
+                exists = self.backend.contains(key)
+                if not exists:
+                    raise RuntimeError("Key not exists after put")
+                # get
+                get_obj = self.backend.get_blocking(key)
+                yield put_obj, get_obj
         except asyncio.TimeoutError:
-            logger.warning("Put timeout, check failed.")
+            logger.warning("Check timeout, check failed.")
             yield None, None
         except Exception as e:
-            logger.error(f"Put error, check failed: {e}")
+            logger.warning("Check error, check failed: %s", e)
             yield None, None
         finally:
             if put_obj is not None:

@@ -262,6 +262,7 @@ _CONFIG_DEFINITIONS: dict[str, dict[str, Any]] = {
         "env_converter": _to_bool,
     },
     "blocking_timeout_secs": {"type": int, "default": 10, "env_converter": int},
+    "contains_timeout_secs": {"type": int, "default": 2, "env_converter": int},
     "external_lookup_client": {
         "type": Optional[str],
         "default": None,
