@@ -1907,7 +1907,9 @@ class LMCacheEngineBuilder:
             numa_mapping = NUMADetector.get_numa_mapping(config)
             logger.info(f"NUMA mapping for instance {instance_id}: {numa_mapping}")
             token_database = cls._Create_token_database(config, metadata)
-            stat_logger = LMCacheStatsLogger(metadata, log_interval=10)
+            stat_logger = LMCacheStatsLogger(
+                metadata, log_interval=config.stats_log_interval
+            )
 
             engine = LMCacheEngine(
                 config,
