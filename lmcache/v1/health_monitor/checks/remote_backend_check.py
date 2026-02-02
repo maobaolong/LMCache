@@ -5,7 +5,7 @@ Health check for RemoteBackend.
 
 # Standard
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 import asyncio
 import time
 
@@ -82,8 +82,25 @@ class RemoteBackendHealthCheck(HealthCheck):
         self._stats_monitor = LMCStatsMonitor.GetOrCreate()
         self._backend_name: Optional[str] = None
 
+    def set_trigger_callback(self, callback: Callable[[], None]) -> None:
+        """
+        Set a callback to trigger immediate health check.
+
+        This registers the callback with the backend so that failures
+        can trigger immediate health checks instead of waiting for
+        the next check interval.
+
+        Args:
+            callback: A callable that triggers an immediate health check.
+        """
+        self.backend.set_on_failure_callback(callback)
+        logger.info("Registered failure callback for %s", self.backend.remote_url)
+
     @classmethod
-    def create(cls, manager: "LMCacheManager") -> List[HealthCheck]:
+    def create(
+        cls,
+        manager: "LMCacheManager",
+    ) -> List[HealthCheck]:
         """
         Create RemoteBackendHealthCheck instances from a LMCacheManager.
 
@@ -132,6 +149,53 @@ class RemoteBackendHealthCheck(HealthCheck):
             Optional[str]: The backend name (e.g., "RemoteBackend")
         """
         return self._backend_name
+
+    def _check_remote_failed_threshold(self, clear_count: bool = False) -> bool:
+        """
+        Check if remote failed count exceeds threshold.
+
+        Args:
+            clear_count: If True, clear the count after reading.
+                         If False, just peek without clearing.
+
+        Returns:
+            bool: True if within threshold, False if exceeded
+        """
+        remote_failed_threshold = self.backend.config.get_extra_config_value(
+            REMOTE_FAILED_THRESHOLD_CONFIG_KEY,
+            DEFAULT_REMOTE_FAILED_THRESHOLD,
+        )
+        if clear_count:
+            count = self.backend.get_and_clear_interval_remote_failed_count()
+        else:
+            count = self.backend.get_interval_remote_failed_count()
+
+        if count >= remote_failed_threshold:
+            logger.warning(
+                "Detected %s remote failed, threshold: %s",
+                count,
+                remote_failed_threshold,
+            )
+            self.failure_time = time.time()
+            return False
+        return True
+
+    def quick_check(self) -> bool:
+        """
+        Perform a lightweight quick health check.
+
+        This checks the remote_failed_count against the threshold.
+        It's designed to be called frequently (on every failure) and
+        completes very quickly without any network I/O.
+
+        Returns:
+            bool: True if check passes, False if failures exceed threshold
+        """
+        # Skip if already in failure recovery mode
+        if self.failure_time is not None:
+            return False
+
+        return self._check_remote_failed_threshold(clear_count=False)
 
     def _try_reinitialize_connection(self) -> bool:
         """
@@ -201,20 +265,8 @@ class RemoteBackendHealthCheck(HealthCheck):
                 )
                 return False
 
-        # Get remote failed threshold from backend config
-        remote_failed_threshold = self.backend.config.get_extra_config_value(
-            REMOTE_FAILED_THRESHOLD_CONFIG_KEY,
-            DEFAULT_REMOTE_FAILED_THRESHOLD,
-        )
-        # Check remote failed
-        remote_failed_count = self.backend.get_and_clear_interval_remote_failed_count()
-        if remote_failed_count >= remote_failed_threshold:
-            logger.warning(
-                "Detected %s remote failed in interval, threshold: %s",
-                remote_failed_count,
-                remote_failed_threshold,
-            )
-            self.failure_time = time.time()
+        # Check remote failed count and clear it
+        if not self._check_remote_failed_threshold(clear_count=True):
             return False
 
         # If connector doesn't support ping, assume it's healthy

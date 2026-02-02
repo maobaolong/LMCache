@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
 from concurrent.futures import Future, TimeoutError
-from typing import Any, List, Optional, Sequence, Set
+from typing import Any, Callable, List, Optional, Sequence, Set
 import asyncio
 import threading
 import time
@@ -89,6 +89,11 @@ class RemoteBackend(StorageBackendInterface):
 
         self._interval_remote_failed_count = 0
 
+        # Callback to notify external components (e.g., HealthMonitor)
+        # when a remote failure occurs. This allows immediate health check
+        # without waiting for the next check interval.
+        self._on_failure_callback: Optional[Callable[[], None]] = None
+
     def _setup_metrics(self):
         prometheus_logger = PrometheusLogger.GetInstanceOrNone()
         if prometheus_logger is not None:
@@ -153,11 +158,11 @@ class RemoteBackend(StorageBackendInterface):
                 res = future.result(self.contains_timeout_secs)
                 return res
         except asyncio.TimeoutError:
-            self._interval_remote_failed_count += 1
+            self._record_failure()
             logger.warning("Timeout occurred in contains, return False")
             return False
         except Exception as e:
-            self._interval_remote_failed_count += 1
+            self._record_failure()
             logger.warning("Error occurred in contains: %s, return False", e)
             return False
 
@@ -307,7 +312,7 @@ class RemoteBackend(StorageBackendInterface):
         t2 = time.perf_counter()
         self.stats_monitor.update_interval_remote_time_to_get_sync((t2 - t1) * 1000)
         if memory_obj is None:
-            self._interval_remote_failed_count += 1
+            self._record_failure()
             return None
         decompressed_memory_obj = self.deserializer.deserialize(memory_obj)
         t3 = time.perf_counter()
@@ -322,6 +327,43 @@ class RemoteBackend(StorageBackendInterface):
         count = self._interval_remote_failed_count
         self._interval_remote_failed_count = 0
         return count
+
+    def get_interval_remote_failed_count(self) -> int:
+        """
+        Get the current interval remote failed count without clearing it.
+
+        This method is used for quick health checks that need to peek at
+        the current failure count without affecting the state.
+
+        Returns:
+            int: The current remote failed count
+        """
+        return self._interval_remote_failed_count
+
+    def set_on_failure_callback(self, callback: Optional[Callable[[], None]]) -> None:
+        """
+        Set a callback to be invoked when a remote failure occurs.
+
+        This allows external components (e.g., HealthMonitor) to be notified
+        immediately when failures happen, enabling faster health status updates.
+
+        Args:
+            callback: A callable that takes no arguments and returns None.
+                      Pass None to remove the callback.
+        """
+        self._on_failure_callback = callback
+
+    def _record_failure(self) -> None:
+        """
+        Record a remote failure by incrementing the failure count
+        and notifying external components.
+        """
+        self._interval_remote_failed_count += 1
+        if self._on_failure_callback is not None:
+            try:
+                self._on_failure_callback()
+            except Exception as e:
+                logger.warning("Error in on_failure_callback: %s", e)
 
     def batched_get_blocking(
         self,
@@ -425,7 +467,7 @@ class RemoteBackend(StorageBackendInterface):
                     self.deserializer.deserialize(memory_obj)
                 )
         if error_happened:
-            self._interval_remote_failed_count += 1
+            self._record_failure()
 
         assert len(decompressed_memory_objs) == len(keys), (
             f"keys length: {len(keys)}, "
