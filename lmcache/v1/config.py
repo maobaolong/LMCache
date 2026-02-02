@@ -496,7 +496,7 @@ _CONFIG_DEFINITIONS: dict[str, dict[str, Any]] = {
     # Stats logging configuration
     "stats_log_interval": {
         "type": int,
-        "default": 10,
+        "default": 60,
         "env_converter": int,
         "description": (
             "Interval in seconds between stats logging. Default is 10 seconds."
