@@ -1149,6 +1149,10 @@ class TensorMemoryAllocator(MemoryAllocatorInterface):
         # For debugging purposes
         self.num_active_allocations = 0
 
+        # Cumulative statistics
+        self.cumulative_alloc_count = 0
+        self.cumulative_alloc_bytes = 0
+
         self.stats_monitor = LMCStatsMonitor.GetOrCreate()
 
     @property
@@ -1177,6 +1181,10 @@ class TensorMemoryAllocator(MemoryAllocatorInterface):
 
         # For debug
         self.num_active_allocations += 1
+
+        # Update cumulative stats
+        self.cumulative_alloc_count += 1
+        self.cumulative_alloc_bytes += aligned_size
 
         # Update stats
         self.stats_monitor.update_local_cache_usage(
@@ -1233,6 +1241,10 @@ class TensorMemoryAllocator(MemoryAllocatorInterface):
 
         # For debug
         self.num_active_allocations += batch_size
+
+        # Update cumulative stats
+        self.cumulative_alloc_count += batch_size
+        self.cumulative_alloc_bytes += total_aligned_size
 
         # Update stats
         self.stats_monitor.update_local_cache_usage(
@@ -1445,6 +1457,10 @@ class PagedTensorMemoryAllocator(MemoryAllocatorInterface):
         self.num_active_allocations = 0
         self.total_allocated_size = 0
 
+        # Cumulative statistics
+        self.cumulative_alloc_count = 0
+        self.cumulative_alloc_bytes = 0
+
         self.stats_monitor = LMCStatsMonitor.GetOrCreate()
         logger.info(
             "Paged tensor memory allocator initialized, "
@@ -1492,6 +1508,11 @@ class PagedTensorMemoryAllocator(MemoryAllocatorInterface):
         # Update debug status
         self.num_active_allocations += 1
         self.total_allocated_size += self.align_bytes
+
+        # Update cumulative stats
+        self.cumulative_alloc_count += 1
+        self.cumulative_alloc_bytes += self.align_bytes
+
         self.stats_monitor.update_local_cache_usage(self.total_allocated_size)
         self.stats_monitor.update_active_memory_objs_count(self.num_active_allocations)
 
@@ -1546,6 +1567,11 @@ class PagedTensorMemoryAllocator(MemoryAllocatorInterface):
         # Update debug status
         self.num_active_allocations += batch_size
         self.total_allocated_size = self.num_active_allocations * self.align_bytes
+
+        # Update cumulative stats
+        self.cumulative_alloc_count += batch_size
+        self.cumulative_alloc_bytes += self.align_bytes * batch_size
+
         self.stats_monitor.update_local_cache_usage(self.total_allocated_size)
         self.stats_monitor.update_active_memory_objs_count(self.num_active_allocations)
 
@@ -2012,6 +2038,38 @@ class MixedMemoryAllocator(MemoryAllocatorInterface):
             else:
                 lmc_ops.free_pinned_ptr(self.buffer.data_ptr())
             self._unregistered = True
+
+    def get_total_size(self) -> int:
+        """Return the total size of the memory allocator in bytes."""
+        return self.size
+
+    def get_allocated_size(self) -> int:
+        """Return the currently allocated size in bytes."""
+        with self.host_mem_lock:
+            if hasattr(self.pin_allocator, "total_allocated_size"):
+                return self.pin_allocator.total_allocated_size
+            return 0
+
+    def get_cumulative_alloc_count(self) -> int:
+        """Return the cumulative allocation count."""
+        with self.host_mem_lock:
+            if hasattr(self.pin_allocator, "cumulative_alloc_count"):
+                return self.pin_allocator.cumulative_alloc_count
+            return 0
+
+    def get_cumulative_alloc_bytes(self) -> int:
+        """Return the cumulative allocated bytes."""
+        with self.host_mem_lock:
+            if hasattr(self.pin_allocator, "cumulative_alloc_bytes"):
+                return self.pin_allocator.cumulative_alloc_bytes
+            return 0
+
+    def get_active_allocations(self) -> int:
+        """Return the number of active allocations."""
+        with self.host_mem_lock:
+            if hasattr(self.pin_allocator, "num_active_allocations"):
+                return self.pin_allocator.num_active_allocations
+            return 0
 
     def __str__(self):
         return "MixedMemoryAllocator"

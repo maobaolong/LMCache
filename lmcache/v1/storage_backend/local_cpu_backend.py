@@ -119,6 +119,94 @@ class LocalCPUBackend(AllocatorBackendInterface):
             prometheus_logger.local_cpu_keys_in_request_count.set_function(
                 lambda: len(self.keys_in_request)
             )
+            # Memory allocator metrics
+            prometheus_logger.memory_allocator_total_size.set_function(
+                lambda: self._get_allocator_total_size(self.memory_allocator)
+            )
+            prometheus_logger.memory_allocator_allocated_size.set_function(
+                lambda: self._get_allocator_allocated_size(self.memory_allocator)
+            )
+            prometheus_logger.read_buffer_allocator_total_size.set_function(
+                lambda: self._get_allocator_total_size(self.read_buffer_allocator)
+            )
+            prometheus_logger.read_buffer_allocator_allocated_size.set_function(
+                lambda: self._get_allocator_allocated_size(self.read_buffer_allocator)
+            )
+            # Cumulative allocation metrics
+            prometheus_logger.memory_allocator_cumulative_alloc_count.set_function(
+                lambda: self._get_allocator_cumulative_alloc_count(
+                    self.memory_allocator
+                )
+            )
+            prometheus_logger.memory_allocator_cumulative_alloc_bytes.set_function(
+                lambda: self._get_allocator_cumulative_alloc_bytes(
+                    self.memory_allocator
+                )
+            )
+            read_alloc = self.read_buffer_allocator
+            prometheus_logger.read_buffer_allocator_cumulative_alloc_count.set_function(
+                lambda: self._get_allocator_cumulative_alloc_count(read_alloc)
+            )
+            prometheus_logger.read_buffer_allocator_cumulative_alloc_bytes.set_function(
+                lambda: self._get_allocator_cumulative_alloc_bytes(read_alloc)
+            )
+            # Active allocations metrics
+            prometheus_logger.memory_allocator_active_allocations.set_function(
+                lambda: self._get_allocator_active_allocations(self.memory_allocator)
+            )
+            prometheus_logger.read_buffer_allocator_active_allocations.set_function(
+                lambda: self._get_allocator_active_allocations(read_alloc)
+            )
+
+    def _get_allocator_total_size(
+        self, allocator: Optional[MemoryAllocatorInterface]
+    ) -> int:
+        """Get total size from allocator if it supports get_total_size method."""
+        if allocator is None:
+            return 0
+        if hasattr(allocator, "get_total_size"):
+            return allocator.get_total_size()
+        return 0
+
+    def _get_allocator_allocated_size(
+        self, allocator: Optional[MemoryAllocatorInterface]
+    ) -> int:
+        """Get allocated size from allocator if it supports get_allocated_size."""
+        if allocator is None:
+            return 0
+        if hasattr(allocator, "get_allocated_size"):
+            return allocator.get_allocated_size()
+        return 0
+
+    def _get_allocator_cumulative_alloc_count(
+        self, allocator: Optional[MemoryAllocatorInterface]
+    ) -> int:
+        """Get cumulative allocation count from allocator."""
+        if allocator is None:
+            return 0
+        if hasattr(allocator, "get_cumulative_alloc_count"):
+            return allocator.get_cumulative_alloc_count()
+        return 0
+
+    def _get_allocator_cumulative_alloc_bytes(
+        self, allocator: Optional[MemoryAllocatorInterface]
+    ) -> int:
+        """Get cumulative allocated bytes from allocator."""
+        if allocator is None:
+            return 0
+        if hasattr(allocator, "get_cumulative_alloc_bytes"):
+            return allocator.get_cumulative_alloc_bytes()
+        return 0
+
+    def _get_allocator_active_allocations(
+        self, allocator: Optional[MemoryAllocatorInterface]
+    ) -> int:
+        """Get number of active allocations from allocator."""
+        if allocator is None:
+            return 0
+        if hasattr(allocator, "get_active_allocations"):
+            return allocator.get_active_allocations()
+        return 0
 
     def __str__(self):
         return self.__class__.__name__

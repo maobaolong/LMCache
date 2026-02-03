@@ -1440,6 +1440,73 @@ class PrometheusLogger:
             labelnames=labelnames,
             multiprocess_mode="livemostrecent",
         ).labels(**self.labels)
+
+        # Memory allocator metrics
+        self.memory_allocator_total_size = self._gauge_cls(
+            name="lmcache:memory_allocator_total_size",
+            documentation="Total size of the memory allocator in bytes",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+        self.memory_allocator_allocated_size = self._gauge_cls(
+            name="lmcache:memory_allocator_allocated_size",
+            documentation="Currently allocated size in bytes",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+        self.read_buffer_allocator_total_size = self._gauge_cls(
+            name="lmcache:read_buffer_allocator_total_size",
+            documentation="Total size of the read buffer allocator in bytes",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+        self.read_buffer_allocator_allocated_size = self._gauge_cls(
+            name="lmcache:read_buffer_allocator_allocated_size",
+            documentation="Currently allocated size of read buffer in bytes",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+
+        # Cumulative allocation metrics
+        self.memory_allocator_cumulative_alloc_count = self._gauge_cls(
+            name="lmcache:memory_allocator_cumulative_alloc_count",
+            documentation="Cumulative allocation count of memory allocator",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+        self.memory_allocator_cumulative_alloc_bytes = self._gauge_cls(
+            name="lmcache:memory_allocator_cumulative_alloc_bytes",
+            documentation="Cumulative allocated bytes of memory allocator",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+        self.read_buffer_allocator_cumulative_alloc_count = self._gauge_cls(
+            name="lmcache:read_buffer_allocator_cumulative_alloc_count",
+            documentation="Cumulative allocation count of read buffer allocator",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+        self.read_buffer_allocator_cumulative_alloc_bytes = self._gauge_cls(
+            name="lmcache:read_buffer_allocator_cumulative_alloc_bytes",
+            documentation="Cumulative allocated bytes of read buffer allocator",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+
+        # Active allocations metrics
+        self.memory_allocator_active_allocations = self._gauge_cls(
+            name="lmcache:memory_allocator_active_allocations",
+            documentation="Number of active allocations in memory allocator",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+        self.read_buffer_allocator_active_allocations = self._gauge_cls(
+            name="lmcache:read_buffer_allocator_active_allocations",
+            documentation="Number of active allocations in read buffer allocator",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+
         self.kv_msg_queue_size = self._gauge_cls(
             name="lmcache:kv_msg_queue_size",
             documentation="The size of the KV message queue in BatchedMessageSender",

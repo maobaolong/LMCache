@@ -521,3 +521,122 @@ class TestLocalCPUBackend:
         local_cpu_backend.remove(key)
         assert memory_obj.get_ref_count() == initial_ref_count + 1
         local_cpu_backend.memory_allocator.close()
+
+    def test_get_allocator_total_size(self, local_cpu_backend):
+        """Test _get_allocator_total_size() helper method."""
+        # Test with valid allocator
+        total_size = local_cpu_backend._get_allocator_total_size(
+            local_cpu_backend.memory_allocator
+        )
+        assert total_size > 0
+
+        # Test with None allocator
+        assert local_cpu_backend._get_allocator_total_size(None) == 0
+
+        local_cpu_backend.memory_allocator.close()
+
+    def test_get_allocator_allocated_size(self, local_cpu_backend):
+        """Test _get_allocator_allocated_size() helper method."""
+        # Initially allocated size should be 0
+        initial_allocated = local_cpu_backend._get_allocator_allocated_size(
+            local_cpu_backend.memory_allocator
+        )
+        assert initial_allocated >= 0
+
+        # Allocate some memory
+        shape = torch.Size([2, 16, 8, 128])
+        dtype = torch.bfloat16
+        memory_obj = local_cpu_backend.allocate(shape, dtype)
+        assert memory_obj is not None
+
+        # Allocated size should increase
+        new_allocated = local_cpu_backend._get_allocator_allocated_size(
+            local_cpu_backend.memory_allocator
+        )
+        assert new_allocated > initial_allocated
+
+        # Test with None allocator
+        assert local_cpu_backend._get_allocator_allocated_size(None) == 0
+
+        local_cpu_backend.memory_allocator.close()
+
+    def test_get_allocator_cumulative_stats(self, local_cpu_backend):
+        """Test cumulative allocation statistics helper methods."""
+        # Get initial cumulative stats
+        initial_count = local_cpu_backend._get_allocator_cumulative_alloc_count(
+            local_cpu_backend.memory_allocator
+        )
+        initial_bytes = local_cpu_backend._get_allocator_cumulative_alloc_bytes(
+            local_cpu_backend.memory_allocator
+        )
+
+        # Allocate some memory
+        shape = torch.Size([2, 16, 8, 128])
+        dtype = torch.bfloat16
+        memory_obj = local_cpu_backend.allocate(shape, dtype)
+        assert memory_obj is not None
+
+        # Cumulative count and bytes should increase
+        new_count = local_cpu_backend._get_allocator_cumulative_alloc_count(
+            local_cpu_backend.memory_allocator
+        )
+        new_bytes = local_cpu_backend._get_allocator_cumulative_alloc_bytes(
+            local_cpu_backend.memory_allocator
+        )
+        assert new_count > initial_count
+        assert new_bytes > initial_bytes
+
+        # Free memory and allocate again
+        memory_obj.ref_count_down()
+        memory_obj2 = local_cpu_backend.allocate(shape, dtype)
+        assert memory_obj2 is not None
+
+        # Cumulative stats should continue to increase
+        final_count = local_cpu_backend._get_allocator_cumulative_alloc_count(
+            local_cpu_backend.memory_allocator
+        )
+        final_bytes = local_cpu_backend._get_allocator_cumulative_alloc_bytes(
+            local_cpu_backend.memory_allocator
+        )
+        assert final_count > new_count
+        assert final_bytes > new_bytes
+
+        # Test with None allocator
+        assert local_cpu_backend._get_allocator_cumulative_alloc_count(None) == 0
+        assert local_cpu_backend._get_allocator_cumulative_alloc_bytes(None) == 0
+
+        local_cpu_backend.memory_allocator.close()
+
+    def test_get_allocator_active_allocations(self, local_cpu_backend):
+        """Test _get_allocator_active_allocations() helper method."""
+        # Initially active allocations should be 0
+        initial_active = local_cpu_backend._get_allocator_active_allocations(
+            local_cpu_backend.memory_allocator
+        )
+        assert initial_active >= 0
+
+        # Allocate some memory
+        shape = torch.Size([2, 16, 8, 128])
+        dtype = torch.bfloat16
+        memory_obj = local_cpu_backend.allocate(shape, dtype)
+        assert memory_obj is not None
+
+        # Active allocations should increase
+        new_active = local_cpu_backend._get_allocator_active_allocations(
+            local_cpu_backend.memory_allocator
+        )
+        assert new_active > initial_active
+
+        # Free memory
+        memory_obj.ref_count_down()
+
+        # Active allocations should decrease
+        final_active = local_cpu_backend._get_allocator_active_allocations(
+            local_cpu_backend.memory_allocator
+        )
+        assert final_active < new_active
+
+        # Test with None allocator
+        assert local_cpu_backend._get_allocator_active_allocations(None) == 0
+
+        local_cpu_backend.memory_allocator.close()
