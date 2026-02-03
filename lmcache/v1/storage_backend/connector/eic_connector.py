@@ -351,7 +351,7 @@ class EICConnector(RemoteConnector):
         perf_timer = PerformanceTimer(key_str, "get_data")
         perf_timer.start("total_cost")
         perf_timer.start("alloc_obj")
-        memory_obj = self.memory_allocator.allocate(
+        memory_obj = self.memory_allocator.allocate_for_read(
             meta.shapes,
             meta.dtypes,
             meta.fmt,
@@ -366,6 +366,10 @@ class EICConnector(RemoteConnector):
 
         perf_timer.start("alloc_mem")
         obj_size = memory_obj.get_size()
+        if memory_obj.tensor is None:
+            logger.error("Memory object tensor is None for key %s", key_str)
+            memory_obj.ref_count_down()
+            return None
         data_ptr = memory_obj.tensor.data_ptr()
         data_keys = eic.StringVector()
         data_vals = eic.IOBuffers()

@@ -436,6 +436,14 @@ class StorageManager:
             for memory_obj in objs:
                 memory_obj.ref_count_down()
 
+    def _use_read_buffer(self) -> bool:
+        """Check if read buffer is enabled on LocalCPUBackend."""
+        if self.local_cpu_backend is None:
+            return False
+        if not isinstance(self.local_cpu_backend, LocalCPUBackend):
+            return False
+        return self.local_cpu_backend.has_read_buffer()
+
     def get(
         self,
         key: CacheEngineKey,
@@ -444,6 +452,7 @@ class StorageManager:
         """
         Blocking function to get the memory object from the storages.
         """
+        use_read_buffer = self._use_read_buffer()
 
         # Search all backends for blocking get
         for backend_name, backend in self.get_active_storage_backends(location):
@@ -451,8 +460,11 @@ class StorageManager:
             # are allocated by the allocator backend.
             memory_obj = backend.get_blocking(key)
             if memory_obj:
+                # When read buffer is enabled, skip writing back to LocalCPU
+                # to avoid eviction pressure on hot cache
                 if (
-                    backend_name not in ["LocalCPUBackend", "PDBackend"]
+                    not use_read_buffer
+                    and backend_name not in ["LocalCPUBackend", "PDBackend"]
                     and "LocalCPUBackend" in self.storage_backends
                 ):
                     local_cpu_backend = self.storage_backends["LocalCPUBackend"]
@@ -489,14 +501,19 @@ class StorageManager:
         """
         Blocking function to get the memory objects from the storages.
         """
+        use_read_buffer = self._use_read_buffer()
+
         # TODO (ApostaC): remove the nested optional here
         for backend_name, storage_backend in self.get_active_storage_backends(location):
             memory_objs = storage_backend.batched_get_blocking(keys)
             if memory_objs:
                 # Align with single-key `get()` logic:
                 # auto-write remote data to local CPU cache
+                # When read buffer is enabled, skip writing back to LocalCPU
+                # to avoid eviction pressure on hot cache
                 if (
-                    backend_name not in ["LocalCPUBackend", "PDBackend"]
+                    not use_read_buffer
+                    and backend_name not in ["LocalCPUBackend", "PDBackend"]
                     and "LocalCPUBackend" in self.storage_backends
                     and None not in memory_objs
                 ):

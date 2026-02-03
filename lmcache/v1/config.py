@@ -69,6 +69,7 @@ _CONFIG_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "max_local_cpu_size": {"type": float, "default": 5.0, "env_converter": float},
     "reserve_local_cpu_size": {"type": float, "default": 0.0, "env_converter": float},
+    "read_buffer_size": {"type": float, "default": 0.0, "env_converter": float},
     "local_disk": {
         "type": Optional[str],
         "default": None,

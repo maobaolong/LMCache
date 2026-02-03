@@ -86,7 +86,7 @@ class RedisConnector(RemoteConnector):
 
             metadata = RemoteMetadata.deserialize(memoryview(metadata_bytes))
 
-            memory_obj = self.local_cpu_backend.allocate(
+            memory_obj = self.local_cpu_backend.allocate_for_read(
                 metadata.shapes,
                 metadata.dtypes,
                 metadata.fmt,
@@ -324,7 +324,7 @@ class RedisSentinelConnector(RemoteConnector):
 
         metadata = RemoteMetadata.deserialize(metadata_bytes)
 
-        memory_obj = self.local_cpu_backend.allocate(
+        memory_obj = self.local_cpu_backend.allocate_for_read(
             metadata.shapes,
             metadata.dtypes,
             metadata.fmt,
@@ -464,7 +464,7 @@ class RedisClusterConnector(RemoteConnector):
 
             metadata = RemoteMetadata.deserialize(memoryview(metadata_bytes))
 
-            memory_obj = self.local_cpu_backend.allocate(
+            memory_obj = self.local_cpu_backend.allocate_for_read(
                 metadata.shapes,
                 metadata.dtypes,
                 metadata.fmt,

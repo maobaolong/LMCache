@@ -478,7 +478,7 @@ class SageMakerHyperPodConnector(RemoteConnector):
             actual_shape = self._parse_shape(metadata.shapes[0])
 
             # Allocate local CPU memory
-            memory_obj = self.local_cpu_backend.allocate(
+            memory_obj = self.local_cpu_backend.allocate_for_read(
                 actual_shape,
                 metadata.dtypes[0],
                 metadata.fmt,

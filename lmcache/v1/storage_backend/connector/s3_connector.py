@@ -357,7 +357,7 @@ class S3Connector(RemoteConnector):
                 return None
             self.object_size_cache[key_str] = obj_size
 
-        memory_obj = self.local_cpu_backend.allocate(
+        memory_obj = self.local_cpu_backend.allocate_for_read(
             self.meta_shapes,
             self.meta_dtypes,
             self.meta_fmt,
@@ -431,7 +431,7 @@ class S3Connector(RemoteConnector):
                     continue
                 self.object_size_cache[key_str] = obj_size
 
-            memory_obj = self.local_cpu_backend.allocate(
+            memory_obj = self.local_cpu_backend.allocate_for_read(
                 self.meta_shapes,
                 self.meta_dtypes,
                 self.meta_fmt,

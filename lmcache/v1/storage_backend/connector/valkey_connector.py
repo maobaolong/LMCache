@@ -136,7 +136,7 @@ class ValkeyConnector(RemoteConnector):
 
         metadata = RemoteMetadata.deserialize(memoryview(metadata_bytes))
 
-        memory_obj = self.local_cpu_backend.allocate(
+        memory_obj = self.local_cpu_backend.allocate_for_read(
             metadata.shapes,
             metadata.dtypes,
             metadata.fmt,
@@ -312,7 +312,7 @@ class ValkeyClusterConnector(RemoteConnector):
 
         metadata = RemoteMetadata.deserialize(memoryview(metadata_bytes))
 
-        memory_obj = self.local_cpu_backend.allocate(
+        memory_obj = self.local_cpu_backend.allocate_for_read(
             metadata.shapes,
             metadata.dtypes,
             metadata.fmt,

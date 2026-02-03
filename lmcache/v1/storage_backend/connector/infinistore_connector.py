@@ -112,7 +112,7 @@ class InfinistoreConnector(RemoteConnector):
             count=num_elements,
         ).reshape(metadata.shapes[0])
 
-        memory_obj = self.memory_allocator.allocate(
+        memory_obj = self.memory_allocator.allocate_for_read(
             metadata.shapes[0],
             metadata.dtypes[0],
             metadata.fmt,

@@ -342,12 +342,14 @@ class MooncakestoreConnector(RemoteConnector):
         buffer_sizes: list[int] = []
 
         for i, _ in enumerate(keys):
-            buf = self.local_cpu_backend.allocate(
+            buf = self.local_cpu_backend.allocate_for_read(
                 self.meta_shapes, self.meta_dtypes, self.meta_fmt
             )
             memory_objs.append(buf)
+            if buf is None:
+                continue
             buf_tensor = buf.tensor
-            if buf is not None and buf_tensor is not None:
+            if buf_tensor is not None:
                 valid_idx.append(i)
 
                 # Prepare the argument lists for the C++ call
@@ -449,7 +451,7 @@ class MooncakestoreConnector(RemoteConnector):
 
         metadata = RemoteMetadata.deserialize(metadata_bytes)
 
-        memory_obj = self.local_cpu_backend.allocate(
+        memory_obj = self.local_cpu_backend.allocate_for_read(
             metadata.shapes,
             metadata.dtypes,
             metadata.fmt,

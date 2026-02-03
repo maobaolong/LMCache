@@ -405,7 +405,7 @@ class LocalDiskBackend(StorageBackendInterface):
             assert dtype is not None
             assert shape is not None
 
-            memory_obj = self.local_cpu_backend.allocate(
+            memory_obj = self.local_cpu_backend.allocate_for_read(
                 shape,
                 dtype,
                 fmt,
@@ -531,7 +531,7 @@ class LocalDiskBackend(StorageBackendInterface):
         Load bytearray from disk.
         """
 
-        memory_obj = self.local_cpu_backend.allocate(shape, dtype, fmt)
+        memory_obj = self.local_cpu_backend.allocate_for_read(shape, dtype, fmt)
         assert memory_obj is not None, "Memory allocation failed during disk load."
 
         buffer = memory_obj.byte_array

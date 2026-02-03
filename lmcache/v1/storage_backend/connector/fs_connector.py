@@ -155,7 +155,7 @@ class FSConnector(RemoteConnector):
         """Synchronous direct IO read, executed in a thread."""
         fd = -1
         try:
-            memory_obj = self.local_cpu_backend.allocate(
+            memory_obj = self.local_cpu_backend.allocate_for_read(
                 self.meta_shapes, self.meta_dtypes, self.meta_fmt
             )
             if memory_obj is None:
@@ -222,11 +222,11 @@ class FSConnector(RemoteConnector):
 
                         # Deserialize metadata and allocate memory
                         metadata = RemoteMetadata.deserialize(md_buffer)
-                        memory_obj = self.local_cpu_backend.allocate(
+                        memory_obj = self.local_cpu_backend.allocate_for_read(
                             metadata.shapes, metadata.dtypes, metadata.fmt
                         )
                     else:
-                        memory_obj = self.local_cpu_backend.allocate(
+                        memory_obj = self.local_cpu_backend.allocate_for_read(
                             self.meta_shapes, self.meta_dtypes, self.meta_fmt
                         )
                     if memory_obj is None:

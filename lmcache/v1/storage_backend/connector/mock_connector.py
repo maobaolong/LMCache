@@ -221,7 +221,7 @@ class MockConnector(RemoteConnector):
             return None
         await self.pressure_manager.on_get(mock_obj)
         metadata = mock_obj.metadata
-        memory_obj = self.local_cpu_backend.allocate(
+        memory_obj = self.local_cpu_backend.allocate_for_read(
             metadata.shape,
             metadata.dtype,
             metadata.fmt,
@@ -259,7 +259,7 @@ class MockConnector(RemoteConnector):
     ) -> List[Optional[MemoryObj]]:
         mock_objs = await self.lru_store.batched_get(keys)
         await self.pressure_manager.on_batched_get(mock_objs)
-        memory_objs = []
+        memory_objs: List[Optional[MemoryObj]] = []
 
         for i, mock_obj in enumerate(mock_objs):
             if mock_obj is None:
@@ -269,7 +269,7 @@ class MockConnector(RemoteConnector):
                 )
                 break
             metadata = mock_obj.metadata
-            memory_obj = self.local_cpu_backend.allocate(
+            memory_obj = self.local_cpu_backend.allocate_for_read(
                 metadata.shape,
                 metadata.dtype,
                 metadata.fmt,

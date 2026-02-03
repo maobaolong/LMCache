@@ -26,7 +26,10 @@ from lmcache.v1.memory_management import (
 from lmcache.v1.storage_backend.abstract_backend import AllocatorBackendInterface
 from lmcache.v1.storage_backend.batched_message_sender import BatchedMessageSender
 from lmcache.v1.storage_backend.cache_policy import get_cache_policy
-from lmcache.v1.system_detection import NUMADetector, SystemMemoryDetector
+from lmcache.v1.system_detection import (
+    NUMADetector,
+    SystemMemoryDetector,
+)
 
 if TYPE_CHECKING:
     # First Party
@@ -68,6 +71,11 @@ class LocalCPUBackend(AllocatorBackendInterface):
             if memory_allocator is None
             else memory_allocator
         )
+        # Read buffer allocator for remote backend reads
+        self.read_buffer_allocator = self._create_read_buffer_allocator(
+            config, metadata
+        )
+
         self.lmcache_worker = lmcache_worker
         self.instance_id = config.lmcache_instance_id
         self.cpu_lock = threading.Lock()
@@ -323,6 +331,84 @@ class LocalCPUBackend(AllocatorBackendInterface):
             )
             return configured_cpu_size
 
+    def _get_memory_format(self) -> MemoryFormat:
+        """Get the memory format based on config."""
+        if self.layerwise:
+            return MemoryFormat.KV_2TD if self.enable_blending else MemoryFormat.KV_T2D
+        return MemoryFormat.KV_2LTD
+
+    def _is_save_only_first_rank(
+        self,
+        config: LMCacheEngineConfig,
+        metadata: Optional[LMCacheEngineMetadata],
+    ) -> bool:
+        """
+        Check if save_only_first_rank mode is enabled and this is the first rank.
+
+        Returns:
+            True if save_only_first_rank is enabled and this is the first rank
+        """
+        if metadata is None:
+            return False
+        save_only_first_rank = (
+            config.get_extra_config_value("save_only_first_rank", metadata.use_mla)
+            and metadata.use_mla
+        )
+        return save_only_first_rank and metadata.is_first_rank()
+
+    def _create_read_buffer_allocator(
+        self,
+        config: LMCacheEngineConfig,
+        metadata: Optional[LMCacheEngineMetadata],
+    ) -> Optional[MemoryAllocatorInterface]:
+        """
+        Create the read buffer allocator if read_buffer_size > 0.
+
+        The read buffer is a dedicated memory pool for remote backend reads,
+        preventing eviction pressure on the hot cache.
+
+        Note: Only first_rank creates allocator when save_only_first_rank is enabled,
+        because other ranks don't need to allocate memory for caching.
+
+        Returns:
+            MemoryAllocatorInterface if created, None otherwise
+        """
+        read_buffer_size = config.read_buffer_size
+        if read_buffer_size <= 0 or metadata is None:
+            logger.info("Read buffer allocator skipped (read_buffer_size <= 0)")
+            return None
+
+        # P2P mode uses PagedCpuGpuMemoryAllocator which is not compatible
+        # with read buffer yet
+        if config.enable_p2p:
+            logger.info("Read buffer allocator skipped (not supported in P2P mode yet)")
+            return None
+
+        # Only first_rank creates read buffer when save_only_first_rank is enabled
+        if not self._is_save_only_first_rank(config, metadata):
+            logger.info(
+                "Read buffer allocator skipped (not first_rank or "
+                "save_only_first_rank disabled)"
+            )
+            return None
+
+        # Create allocator for first_rank
+        numa_mapping = NUMADetector.get_numa_mapping(config)
+        logger.info(f"NUMA mapping {numa_mapping}")
+        allocator = MixedMemoryAllocator(
+            int(read_buffer_size * 1024**3),
+            numa_mapping=numa_mapping,
+        )
+        logger.info(
+            "Read buffer allocator initialized with size: %.2f GB",
+            read_buffer_size,
+        )
+        return allocator
+
+    def has_read_buffer(self) -> bool:
+        """Check if read buffer allocator is enabled."""
+        return self.read_buffer_allocator is not None
+
     def initialize_allocator(
         self,
         config: LMCacheEngineConfig,
@@ -330,19 +416,12 @@ class LocalCPUBackend(AllocatorBackendInterface):
     ) -> MemoryAllocatorInterface:
         cpu_size = config.max_local_cpu_size
 
-        if metadata is not None:
-            # save_only_first_rank only works when use mla
-            save_only_first_rank = (
-                config.get_extra_config_value("save_only_first_rank", metadata.use_mla)
-                and metadata.use_mla
+        if self._is_save_only_first_rank(config, metadata):
+            # Only the first rank will save the cache,
+            # so we need to set it larger than other ranks
+            cpu_size = config.get_extra_config_value(
+                "first_rank_max_local_cpu_size", cpu_size
             )
-
-            if save_only_first_rank and metadata.is_first_rank():
-                # Only the first rank will save the cache,
-                # so we need to set it larger than other ranks
-                cpu_size = config.get_extra_config_value(
-                    "first_rank_max_local_cpu_size", cpu_size
-                )
 
         # Detect the numa mapping
         numa_mapping = NUMADetector.get_numa_mapping(config)
@@ -399,6 +478,35 @@ class LocalCPUBackend(AllocatorBackendInterface):
                     numa_mapping=numa_mapping,
                 )
 
+    def allocate_for_read(
+        self,
+        shapes: Union[torch.Size, list[torch.Size]],
+        dtypes: Union[torch.dtype, list[torch.dtype]],
+        fmt: Optional[MemoryFormat] = None,
+    ) -> Optional[MemoryObj]:
+        """
+        Allocate memory for reading from remote backends.
+
+        This method uses read buffer if available, otherwise falls back
+        to the main allocator. Connectors should use this method when
+        reading from remote storage.
+
+        Returns:
+            MemoryObj if allocation succeeds, None otherwise
+        """
+        if fmt is None:
+            fmt = self._get_memory_format()
+
+        # Prioritize read buffer allocator if available
+        if self.read_buffer_allocator is not None:
+            memory_obj = self.read_buffer_allocator.allocate(shapes, dtypes, fmt)
+            if memory_obj is not None:
+                return memory_obj
+            # Fall through to main allocator if read buffer is exhausted
+
+        # Fallback to main allocator
+        return self.allocate(shapes, dtypes, fmt, eviction=True, busy_loop=True)
+
     @_lmcache_nvtx_annotate
     def allocate(
         self,
@@ -413,6 +521,9 @@ class LocalCPUBackend(AllocatorBackendInterface):
         evict if necessary. Storage manager should always call
         local_cpu_backend.allocate() to get memory objects
         regardless of whether local_cpu is True or False
+
+        Note: For remote backend reads, use allocate_for_read() instead,
+        which prioritizes the read buffer to avoid eviction pressure.
 
         busy_loop should only be used for retrieve
         the reasoning is that:
@@ -430,13 +541,7 @@ class LocalCPUBackend(AllocatorBackendInterface):
             f"Allocating memory in local cpu backend with busy loop: {busy_loop}"
         )
         if fmt is None:
-            if self.layerwise:
-                if self.enable_blending:
-                    fmt = MemoryFormat.KV_2TD
-                else:
-                    fmt = MemoryFormat.KV_T2D
-            else:
-                fmt = MemoryFormat.KV_2LTD
+            fmt = self._get_memory_format()
 
         memory_obj = self.memory_allocator.allocate(shapes, dtypes, fmt)
         if memory_obj is not None or not eviction:
