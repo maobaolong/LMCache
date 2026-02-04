@@ -1289,18 +1289,20 @@ class LMCacheConnectorV1Impl:
 
         if below_min_retrieve:
             logger.info(
-                "Reqid: %s, Total tokens %d, vLLM num_computed_tokens: %d, LMCache hit tokens: %d, but need to load: %d < min_retrieve %d, "
+                "Reqid: %s, Total tokens %d, vLLM num_computed_tokens: %d, "
+                "LMCache hit tokens: %d, but need to load: %d < min_retrieve %d, "
                 "skip retrieve but record for save skip",
                 req_id,
                 request.num_tokens,
-                num_computed_tokens, 
+                num_computed_tokens,
                 num_external_hit_tokens,
                 need_to_allocate,
                 min_retrieve,
             )
         else:
             logger.info(
-                "Reqid: %s, Total tokens %d, vLLM num_computed_tokens: %d, LMCache hit tokens: %d, need to load: %d",
+                "Reqid: %s, Total tokens %d, vLLM num_computed_tokens: %d, "
+                "LMCache hit tokens: %d, need to load: %d",
                 req_id,
                 request.num_tokens,
                 num_computed_tokens,
