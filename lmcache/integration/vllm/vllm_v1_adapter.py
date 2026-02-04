@@ -827,6 +827,7 @@ class LMCacheConnectorV1Impl:
                     slot_mapping=slot_mapping[:lmcache_cached_tokens],
                     request_configs=request.request_configs,
                     req_id=request.req_id,
+                    req_length=len(tokens),
                 )
 
                 # Check the result
@@ -1284,24 +1285,27 @@ class LMCacheConnectorV1Impl:
         # If below minimum, skip retrieve but still record hit tokens
         # for skip_leading_tokens to avoid re-storing existing chunks
         min_retrieve = self.config.min_retrieve_tokens
-        below_min_retrieve = min_retrieve > 0 and num_external_hit_tokens < min_retrieve
+        below_min_retrieve = min_retrieve > 0 and need_to_allocate < min_retrieve
 
         if below_min_retrieve:
             logger.info(
-                "Reqid: %s, Total tokens %d, LMCache hit: %d < min_retrieve %d, "
+                "Reqid: %s, Total tokens %d, vLLM num_computed_tokens: %d, LMCache hit tokens: %d, but need to load: %d < min_retrieve %d, "
                 "skip retrieve but record for save skip",
                 req_id,
                 request.num_tokens,
+                num_computed_tokens, 
                 num_external_hit_tokens,
+                need_to_allocate,
                 min_retrieve,
             )
         else:
             logger.info(
-                "Reqid: %s, Total tokens %d, LMCache hit tokens: %d, need to load: %d",
+                "Reqid: %s, Total tokens %d, vLLM num_computed_tokens: %d, LMCache hit tokens: %d, need to load: %d",
                 req_id,
                 request.num_tokens,
+                num_computed_tokens,
                 num_external_hit_tokens,
-                need_to_allocate,
+                max(need_to_allocate, 0),
             )
 
         self.load_specs[req_id] = LoadSpec(
