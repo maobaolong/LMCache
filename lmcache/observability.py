@@ -866,6 +866,40 @@ class LMCStatsMonitor:
     def DestroyInstance():
         LMCStatsMonitor._instance = None
 
+    def reset_state(self) -> None:
+        """
+        Reset monitor state to initial values.
+        Calls _clear() for interval metrics and additionally resets
+        request ID counters and other persistent state.
+        """
+        self._clear()
+
+        # Reset state not covered by _clear()
+        self.local_cache_usage_bytes = 0
+        self.remote_cache_usage_bytes = 0
+        self.local_storage_usage_bytes = 0
+
+        self.active_memory_objs_count = 0
+        self.pinned_memory_objs_count = 0
+
+        self.retrieve_request_id = 0
+        self.store_request_id = 0
+        self.lookup_request_id = 0
+        self.p2p_request_id = 0
+
+        self._current_retrieve_stats = None
+        self.retrieve_time_threshold = 1e9
+        self.retrieve_token_speed_threshold = -1.0
+        self.last_retrieve_warning_time = 0.0
+        self.skipped_retrieve_warning_count = 0
+
+    @staticmethod
+    def reset_instance() -> None:
+        instance = LMCStatsMonitor._instance
+        if instance is None:
+            return
+        instance.reset_state()
+
     @staticmethod
     def unregister_all_metrics():
         collectors = list(REGISTRY._collector_to_names.keys())
@@ -881,6 +915,16 @@ class PrometheusLogger:
     _counter_cls = prometheus_client.Counter
     _histogram_cls = prometheus_client.Histogram
 
+    def _create_counter(
+        self, name: str, documentation: str, labelnames: List[str]
+    ) -> prometheus_client.Counter:
+        """Create a Counter and register it for reset_counters()."""
+        counter = self._counter_cls(
+            name=name, documentation=documentation, labelnames=labelnames
+        )
+        self._counters.append(counter)
+        return counter
+
     def __init__(self, metadata: LMCacheEngineMetadata):
         # Ensure PROMETHEUS_MULTIPROC_DIR is set before any metric registration
         if "PROMETHEUS_MULTIPROC_DIR" not in os.environ:
@@ -894,37 +938,40 @@ class PrometheusLogger:
         self.labels = self._metadata_to_labels(metadata)
         labelnames = list(self.labels.keys())
 
-        self.counter_num_retrieve_requests = self._counter_cls(
+        # List to track all counters for reset_counters()
+        self._counters: List[prometheus_client.Counter] = []
+
+        self.counter_num_retrieve_requests = self._create_counter(
             name="lmcache:num_retrieve_requests",
             documentation="Total number of retrieve requests sent to lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_store_requests = self._counter_cls(
+        self.counter_num_store_requests = self._create_counter(
             name="lmcache:num_store_requests",
             documentation="Total number of store requests sent to lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_lookup_requests = self._counter_cls(
+        self.counter_num_lookup_requests = self._create_counter(
             name="lmcache:num_lookup_requests",
             documentation="Total number of lookup requests sent to lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_requested_tokens = self._counter_cls(
+        self.counter_num_requested_tokens = self._create_counter(
             name="lmcache:num_requested_tokens",
             documentation="Total number of tokens requested from lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_hit_tokens = self._counter_cls(
+        self.counter_num_hit_tokens = self._create_counter(
             name="lmcache:num_hit_tokens",
             documentation="Total number of tokens hit in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_stored_tokens = self._counter_cls(
+        self.counter_num_stored_tokens = self._create_counter(
             name="lmcache:num_stored_tokens",
             documentation=(
                 "Total number of tokens stored in lmcache including evicted ones"
@@ -932,99 +979,99 @@ class PrometheusLogger:
             labelnames=labelnames,
         )
 
-        self.counter_num_lookup_tokens = self._counter_cls(
+        self.counter_num_lookup_tokens = self._create_counter(
             name="lmcache:num_lookup_tokens",
             documentation="Total number of tokens requested in lookup from lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_lookup_hits = self._counter_cls(
+        self.counter_num_lookup_hits = self._create_counter(
             name="lmcache:num_lookup_hits",
             documentation="Total number of tokens hit in lookup from lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_vllm_hit_tokens = self._counter_cls(
+        self.counter_num_vllm_hit_tokens = self._create_counter(
             name="lmcache:num_vllm_hit_tokens",
             documentation="Number of hit tokens in vllm",
             labelnames=labelnames,
         )
 
-        self.counter_num_prompt_tokens = self._counter_cls(
+        self.counter_num_prompt_tokens = self._create_counter(
             name="lmcache:num_prompt_tokens",
             documentation="Number of prompt tokens in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_remote_read_requests = self._counter_cls(
+        self.counter_num_remote_read_requests = self._create_counter(
             name="lmcache:num_remote_read_requests",
             documentation="Total number of requests read from "
             "remote backends in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_remote_read_bytes = self._counter_cls(
+        self.counter_num_remote_read_bytes = self._create_counter(
             name="lmcache:num_remote_read_bytes",
             documentation="Total number of bytes read from remote backends in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_remote_write_requests = self._counter_cls(
+        self.counter_num_remote_write_requests = self._create_counter(
             name="lmcache:num_remote_write_requests",
             documentation="Total number of requests write to "
             "remote backends in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_remote_write_bytes = self._counter_cls(
+        self.counter_num_remote_write_bytes = self._create_counter(
             name="lmcache:num_remote_write_bytes",
             documentation="Total number of bytes write to remote backends in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_local_cpu_evict_count = self._counter_cls(
+        self.counter_local_cpu_evict_count = self._create_counter(
             name="lmcache:local_cpu_evict_count",
             documentation="Total number of evict in local cpu backend",
             labelnames=labelnames,
         )
 
-        self.counter_local_cpu_evict_keys_count = self._counter_cls(
+        self.counter_local_cpu_evict_keys_count = self._create_counter(
             name="lmcache:local_cpu_evict_keys_count",
             documentation="Total number of evict keys in local cpu backend",
             labelnames=labelnames,
         )
 
-        self.counter_local_cpu_evict_failed_count = self._counter_cls(
+        self.counter_local_cpu_evict_failed_count = self._create_counter(
             name="lmcache:local_cpu_evict_failed_count",
             documentation="Total number of failed eviction in local cpu backend",
             labelnames=labelnames,
         )
 
-        self.counter_forced_unpin_count = self._counter_cls(
+        self.counter_forced_unpin_count = self._create_counter(
             name="lmcache:forced_unpin_count",
             documentation="Total number of forced unpin due to timeout",
             labelnames=labelnames,
         )
 
-        self.counter_lookup_0_hit_requests = self._counter_cls(
+        self.counter_lookup_0_hit_requests = self._create_counter(
             name="lmcache:lookup_0_hit_requests",
             documentation="Total number of 0 hit lookup requests",
             labelnames=labelnames,
         )
 
-        self.counter_num_slow_retrieval_by_time = self._counter_cls(
+        self.counter_num_slow_retrieval_by_time = self._create_counter(
             name="lmcache:num_slow_retrieval_by_time",
             documentation="Total number of slow retrievals by time threshold",
             labelnames=labelnames,
         )
 
-        self.counter_num_slow_retrieval_by_speed = self._counter_cls(
+        self.counter_num_slow_retrieval_by_speed = self._create_counter(
             name="lmcache:num_slow_retrieval_by_speed",
             documentation="Total number of slow retrievals by speed threshold",
             labelnames=labelnames,
         )
 
-        self.counter_num_unsuccessful_retrieve_requests = self._counter_cls(
+        self.counter_num_unsuccessful_retrieve_requests = self._create_counter(
             name="lmcache:num_unsuccessful_retrieve_requests",
             documentation="Total number of unsuccessful retrieve requests",
             labelnames=labelnames,
@@ -1406,12 +1453,12 @@ class PrometheusLogger:
             labelnames=labelnames,
             multiprocess_mode="livemostrecent",
         )
-        self.counter_remote_ping_errors = self._counter_cls(
+        self.counter_remote_ping_errors = self._create_counter(
             name="lmcache:remote_ping_errors",
             documentation="Number of ping errors to remote backends",
             labelnames=labelnames,
         )
-        self.counter_remote_ping_successes = self._counter_cls(
+        self.counter_remote_ping_successes = self._create_counter(
             name="lmcache:remote_ping_successes",
             documentation="Number of ping successes to remote backends",
             labelnames=labelnames,
@@ -1784,6 +1831,34 @@ class PrometheusLogger:
         otherwise returns None.
         """
         return PrometheusLogger._instance
+
+    def reset_counters(self) -> None:
+        """
+        Reset all Prometheus Counter metrics by calling clear().
+        This removes all label values and their accumulated counts.
+        """
+        for counter in self._counters:
+            counter.clear()
+
+
+def reset_observability_metrics() -> None:
+    """
+    Reset observability metrics to their initial state.
+
+    This function only resets the LMCStatsMonitor state (interval counters,
+    request trackers, etc.) while keeping the PrometheusLogger instance and
+    all registered metrics intact. This ensures that any callbacks registered
+    via metric.set_function() (e.g., in vllm_v1_adapter._setup_metrics)
+    continue to work correctly.
+
+    Note: Gauge metrics will be updated with new values on the next log.
+    Histogram metrics accumulate observations and are not reset.
+    """
+    LMCStatsMonitor.reset_instance()
+
+    prometheus_logger = PrometheusLogger.GetInstanceOrNone()
+    if prometheus_logger is not None:
+        prometheus_logger.reset_counters()
 
 
 class LMCacheStatsLogger:
