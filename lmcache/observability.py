@@ -866,40 +866,6 @@ class LMCStatsMonitor:
     def DestroyInstance():
         LMCStatsMonitor._instance = None
 
-    def reset_state(self) -> None:
-        """
-        Reset monitor state to initial values.
-        Calls _clear() for interval metrics and additionally resets
-        request ID counters and other persistent state.
-        """
-        self._clear()
-
-        # Reset state not covered by _clear()
-        self.local_cache_usage_bytes = 0
-        self.remote_cache_usage_bytes = 0
-        self.local_storage_usage_bytes = 0
-
-        self.active_memory_objs_count = 0
-        self.pinned_memory_objs_count = 0
-
-        self.retrieve_request_id = 0
-        self.store_request_id = 0
-        self.lookup_request_id = 0
-        self.p2p_request_id = 0
-
-        self._current_retrieve_stats = None
-        self.retrieve_time_threshold = 1e9
-        self.retrieve_token_speed_threshold = -1.0
-        self.last_retrieve_warning_time = 0.0
-        self.skipped_retrieve_warning_count = 0
-
-    @staticmethod
-    def reset_instance() -> None:
-        instance = LMCStatsMonitor._instance
-        if instance is None:
-            return
-        instance.reset_state()
-
     @staticmethod
     def unregister_all_metrics():
         collectors = list(REGISTRY._collector_to_names.keys())
@@ -1878,17 +1844,7 @@ class PrometheusLogger:
 def reset_observability_metrics() -> None:
     """
     Reset observability metrics to their initial state.
-
-    This function only resets the LMCStatsMonitor state (interval counters,
-    request trackers, etc.) while keeping the PrometheusLogger instance and
-    all registered metrics intact. This ensures that any callbacks registered
-    via metric.set_function() (e.g., in vllm_v1_adapter._setup_metrics)
-    continue to work correctly.
-
-    Note: Gauge metrics will be updated with new values on the next log.
-    Histogram metrics accumulate observations and are not reset.
     """
-    LMCStatsMonitor.reset_instance()
 
     prometheus_logger = PrometheusLogger.GetInstanceOrNone()
     if prometheus_logger is not None:
