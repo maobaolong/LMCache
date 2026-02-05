@@ -2,7 +2,7 @@
 # Standard
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 import os
 import threading
 import time
@@ -925,6 +925,23 @@ class PrometheusLogger:
         self._counters.append(counter)
         return counter
 
+    def _create_histogram(
+        self,
+        name: str,
+        documentation: str,
+        labelnames: List[str],
+        buckets: Sequence[float],
+    ) -> prometheus_client.Histogram:
+        """Create a Histogram and register it for reset_histograms()."""
+        histogram = self._histogram_cls(
+            name=name,
+            documentation=documentation,
+            labelnames=labelnames,
+            buckets=buckets,
+        )
+        self._histograms.append(histogram)
+        return histogram
+
     def __init__(self, metadata: LMCacheEngineMetadata):
         # Ensure PROMETHEUS_MULTIPROC_DIR is set before any metric registration
         if "PROMETHEUS_MULTIPROC_DIR" not in os.environ:
@@ -938,8 +955,9 @@ class PrometheusLogger:
         self.labels = self._metadata_to_labels(metadata)
         labelnames = list(self.labels.keys())
 
-        # List to track all counters for reset_counters()
+        # List to track all counters/histograms for reset methods
         self._counters: List[prometheus_client.Counter] = []
+        self._histograms: List[prometheus_client.Histogram] = []
 
         self.counter_num_retrieve_requests = self._create_counter(
             name="lmcache:num_retrieve_requests",
@@ -1138,7 +1156,7 @@ class PrometheusLogger:
             6.0,  # 6 s
             10.0,  # 10 s
         ]
-        self.histogram_time_to_retrieve = self._histogram_cls(
+        self.histogram_time_to_retrieve = self._create_histogram(
             name="lmcache:time_to_retrieve",
             documentation="Time to retrieve from lmcache (seconds)",
             labelnames=labelnames,
@@ -1157,7 +1175,7 @@ class PrometheusLogger:
             0.5,  # 500 ms
             1.0,  # 1 s
         ]
-        self.histogram_time_to_store = self._histogram_cls(
+        self.histogram_time_to_store = self._create_histogram(
             name="lmcache:time_to_store",
             documentation="Time to store to lmcache (seconds)",
             labelnames=labelnames,
@@ -1176,7 +1194,7 @@ class PrometheusLogger:
             0.5,  # 500 ms
             1.0,  # 1 s
         ]
-        self.histogram_time_to_lookup = self._histogram_cls(
+        self.histogram_time_to_lookup = self._create_histogram(
             name="lmcache:time_to_lookup",
             documentation="Time to lookup in lmcache (seconds)",
             labelnames=labelnames,
@@ -1207,67 +1225,69 @@ class PrometheusLogger:
             5.0,  # 5 s
             10.0,  # 10 s
         ]
-        self.histogram_retrieve_process_tokens_time = self._histogram_cls(
+        self.histogram_retrieve_process_tokens_time = self._create_histogram(
             name="lmcache:retrieve_process_tokens_time",
             documentation="Time to process tokens in retrieve (seconds)",
             labelnames=labelnames,
             buckets=long_profiling_buckets,
         )
-        self.histogram_retrieve_broadcast_time = self._histogram_cls(
+        self.histogram_retrieve_broadcast_time = self._create_histogram(
             name="lmcache:retrieve_broadcast_time",
             documentation="Time to broadcast memory objects in retrieve (seconds)",
             labelnames=labelnames,
             buckets=short_profiling_buckets,
         )
-        self.histogram_retrieve_to_gpu_time = self._histogram_cls(
+        self.histogram_retrieve_to_gpu_time = self._create_histogram(
             name="lmcache:retrieve_to_gpu_time",
             documentation="Time to move data to GPU in retrieve (seconds)",
             labelnames=labelnames,
             buckets=short_profiling_buckets,
         )
-        self.histogram_remote_backend_batched_get_blocking_time = self._histogram_cls(
-            name="lmcache:remote_backend_batched_get_blocking_time",
-            documentation="Time to get data from remote backend (seconds)",
-            labelnames=labelnames,
-            buckets=long_profiling_buckets,
+        self.histogram_remote_backend_batched_get_blocking_time = (
+            self._create_histogram(
+                name="lmcache:remote_backend_batched_get_blocking_time",
+                documentation="Time to get data from remote backend (seconds)",
+                labelnames=labelnames,
+                buckets=long_profiling_buckets,
+            )
         )
-        self.histogram_instrumented_connector_batched_get_time = self._histogram_cls(
+        self.histogram_instrumented_connector_batched_get_time = self._create_histogram(
             name="lmcache:instrumented_connector_batched_get_time",
             documentation="Time used by the connector (seconds)",
             labelnames=labelnames,
             buckets=long_profiling_buckets,
         )
-        self.histogram_fs_connector_get_time = self._histogram_cls(
+        self.histogram_fs_connector_get_time = self._create_histogram(
             name="lmcache:fs_connector_get_time",
             documentation="Time to get from fs connector (seconds)",
             labelnames=labelnames,
             buckets=short_profiling_buckets,
         )
-        self.histogram_nitrofs_connector_read_time = self._histogram_cls(
+        self.histogram_nitrofs_connector_read_time = self._create_histogram(
             name="lmcache:nitrofs_connector_read_time",
             documentation="Time to read from nitrofs connector (seconds)",
             labelnames=labelnames,
             buckets=short_profiling_buckets,
         )
-        self.histogram_instrumented_connector_get_time = self._histogram_cls(
+        self.histogram_instrumented_connector_get_time = self._create_histogram(
             name="lmcache:instrumented_connector_get_time",
             documentation="Time used by the instrumented connector (seconds)",
             labelnames=labelnames,
             buckets=short_profiling_buckets,
         )
-        self.histogram_store_process_tokens_time = self._histogram_cls(
+        self.histogram_store_process_tokens_time = self._create_histogram(
             name="lmcache:store_process_tokens_time",
             documentation="Time to process tokens in store (seconds)",
             labelnames=labelnames,
             buckets=short_profiling_buckets,
         )
-        self.histogram_store_from_gpu_time = self._histogram_cls(
+        self.histogram_store_from_gpu_time = self._create_histogram(
             name="lmcache:store_from_gpu_time",
             documentation="Time to move data from GPU in store (seconds)",
             labelnames=labelnames,
             buckets=short_profiling_buckets,
         )
-        self.histogram_store_put_time = self._histogram_cls(
+        self.histogram_store_put_time = self._create_histogram(
             name="lmcache:store_put_time",
             documentation="Time to put data to storage in store (seconds)",
             labelnames=labelnames,
@@ -1286,7 +1306,7 @@ class PrometheusLogger:
             32768,
             65536,
         ]
-        self.histogram_retrieve_speed = self._histogram_cls(
+        self.histogram_retrieve_speed = self._create_histogram(
             name="lmcache:retrieve_speed",
             documentation="Retrieve speed of lmcache (tokens per second)",
             labelnames=labelnames,
@@ -1305,7 +1325,7 @@ class PrometheusLogger:
             32768,
             65536,
         ]
-        self.histogram_store_speed = self._histogram_cls(
+        self.histogram_store_speed = self._create_histogram(
             name="lmcache:store_speed",
             documentation="Store speed of lmcache (tokens per second)",
             labelnames=labelnames,
@@ -1325,7 +1345,7 @@ class PrometheusLogger:
             5.0,  # 5s
             10.0,  # 10s
         ]
-        self.histogram_p2p_time_to_transfer = self._histogram_cls(
+        self.histogram_p2p_time_to_transfer = self._create_histogram(
             name="lmcache:p2p_time_to_transfer",
             documentation="Time to transfer via P2P (seconds)",
             labelnames=labelnames,
@@ -1344,7 +1364,7 @@ class PrometheusLogger:
             16384,
             65536,
         ]
-        self.histogram_p2p_transfer_speed = self._histogram_cls(
+        self.histogram_p2p_transfer_speed = self._create_histogram(
             name="lmcache:p2p_transfer_speed",
             documentation="P2P transfer speed (tokens per second)",
             labelnames=labelnames,
@@ -1363,7 +1383,7 @@ class PrometheusLogger:
             5000,
             10000,
         ]
-        self.histogram_remote_time_to_get = self._histogram_cls(
+        self.histogram_remote_time_to_get = self._create_histogram(
             name="lmcache:remote_time_to_get",
             documentation="Time to get from remote backends (ms)",
             labelnames=labelnames,
@@ -1382,7 +1402,7 @@ class PrometheusLogger:
             5000,
             10000,
         ]
-        self.histogram_remote_time_to_put = self._histogram_cls(
+        self.histogram_remote_time_to_put = self._create_histogram(
             name="lmcache:remote_time_to_put",
             documentation="Time to put to remote backends (ms)",
             labelnames=labelnames,
@@ -1401,7 +1421,7 @@ class PrometheusLogger:
             5000,
             10000,
         ]
-        self.histogram_remote_time_to_get_sync = self._histogram_cls(
+        self.histogram_remote_time_to_get_sync = self._create_histogram(
             name="lmcache:remote_time_to_get_sync",
             documentation="Time to get from remote backends synchronously(ms)",
             labelnames=labelnames,
@@ -1420,7 +1440,7 @@ class PrometheusLogger:
             0.9,
             1.0,
         ]
-        self.histogram_request_cache_hit_rate = self._histogram_cls(
+        self.histogram_request_cache_hit_rate = self._create_histogram(
             name="lmcache:request_cache_hit_rate",
             documentation="Request cache hit rate",
             labelnames=labelnames,
@@ -1439,7 +1459,7 @@ class PrometheusLogger:
             3000,
             5000,
         ]
-        self.histogram_request_cache_lifespan = self._histogram_cls(
+        self.histogram_request_cache_lifespan = self._create_histogram(
             name="lmcache:request_cache_lifespan",
             documentation="Request cache lifespan in minutes",
             labelnames=labelnames,
@@ -1840,6 +1860,14 @@ class PrometheusLogger:
         for counter in self._counters:
             counter.clear()
 
+    def reset_histograms(self) -> None:
+        """
+        Reset all Prometheus Histogram metrics by calling clear().
+        This removes all label values and their accumulated observations.
+        """
+        for histogram in self._histograms:
+            histogram.clear()
+
 
 def reset_observability_metrics() -> None:
     """
@@ -1859,6 +1887,7 @@ def reset_observability_metrics() -> None:
     prometheus_logger = PrometheusLogger.GetInstanceOrNone()
     if prometheus_logger is not None:
         prometheus_logger.reset_counters()
+        prometheus_logger.reset_histograms()
 
 
 class LMCacheStatsLogger:
