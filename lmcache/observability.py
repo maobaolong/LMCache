@@ -29,6 +29,8 @@ class LMCacheStats:
     interval_lookup_requests: int
     interval_requested_tokens: int
     interval_hit_tokens: int
+    interval_local_hit_tokens: int
+    interval_remote_hit_tokens: int
     interval_stored_tokens: int
     interval_lookup_tokens: int
     interval_lookup_hits: int
@@ -247,6 +249,8 @@ class LMCStatsMonitor:
         self.interval_lookup_requests = 0
         self.interval_requested_tokens = 0  # total requested tokens retrieve
         self.interval_hit_tokens = 0  # total hit tokens retrieve
+        self.interval_local_hit_tokens = 0  # total local hit tokens retrieve
+        self.interval_remote_hit_tokens = 0  # total remote hit tokens retrieve
         self.interval_stored_tokens = 0  # total tokens tored in LMCache
         self.interval_lookup_tokens = 0  # total requested tokens lookup
         self.interval_lookup_hits = 0  # total hit tokens lookup
@@ -404,6 +408,8 @@ class LMCStatsMonitor:
         if retrieve_stats.end_time == 0:
             retrieve_stats.end_time = curr_time
         self.interval_hit_tokens += num_retrieved_tokens
+        self.interval_local_hit_tokens += local_hit_tokens
+        self.interval_remote_hit_tokens += remote_hit_tokens
         self.clear_current_retrieve_stats()
 
         time_to_retrieve = retrieve_stats.time_to_retrieve()
@@ -605,6 +611,8 @@ class LMCStatsMonitor:
 
         self.interval_requested_tokens = 0
         self.interval_hit_tokens = 0
+        self.interval_local_hit_tokens = 0
+        self.interval_remote_hit_tokens = 0
         self.interval_stored_tokens = 0
         self.interval_lookup_tokens = 0
         self.interval_lookup_hits = 0
@@ -803,6 +811,8 @@ class LMCStatsMonitor:
             interval_lookup_requests=self.interval_lookup_requests,
             interval_requested_tokens=self.interval_requested_tokens,
             interval_hit_tokens=self.interval_hit_tokens,
+            interval_local_hit_tokens=self.interval_local_hit_tokens,
+            interval_remote_hit_tokens=self.interval_remote_hit_tokens,
             interval_stored_tokens=self.interval_stored_tokens,
             interval_lookup_tokens=self.interval_lookup_tokens,
             interval_lookup_hits=self.interval_lookup_hits,
@@ -958,6 +968,18 @@ class PrometheusLogger:
         self.counter_num_hit_tokens = self._create_counter(
             name="lmcache:num_hit_tokens",
             documentation="Total number of tokens hit in lmcache",
+            labelnames=labelnames,
+        )
+
+        self.counter_num_local_hit_tokens = self._create_counter(
+            name="lmcache:num_local_hit_tokens",
+            documentation="Total number of tokens hit locally in lmcache",
+            labelnames=labelnames,
+        )
+
+        self.counter_num_remote_hit_tokens = self._create_counter(
+            name="lmcache:num_remote_hit_tokens",
+            documentation="Total number of tokens hit remotely in lmcache",
             labelnames=labelnames,
         )
 
@@ -1628,6 +1650,12 @@ class PrometheusLogger:
             self.counter_num_requested_tokens, stats.interval_requested_tokens
         )
         self._log_counter(self.counter_num_hit_tokens, stats.interval_hit_tokens)
+        self._log_counter(
+            self.counter_num_local_hit_tokens, stats.interval_local_hit_tokens
+        )
+        self._log_counter(
+            self.counter_num_remote_hit_tokens, stats.interval_remote_hit_tokens
+        )
         self._log_counter(self.counter_num_stored_tokens, stats.interval_stored_tokens)
         self._log_counter(self.counter_num_lookup_tokens, stats.interval_lookup_tokens)
         self._log_counter(self.counter_num_lookup_hits, stats.interval_lookup_hits)
