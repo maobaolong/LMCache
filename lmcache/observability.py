@@ -129,8 +129,9 @@ class LookupRequestStats:
 class RetrieveRequestStats:
     request_id: int
     num_tokens: int
-    local_hit_tokens: int
-    remote_hit_tokens: int  # Not used for now
+    local_hit_tokens: int  # num of tokens retrieved from local
+    remote_hit_tokens: int  # num of tokens retrieved from remote
+    num_retrieved_tokens: int  # num total tokens retrieved
     start_time: float
     end_time: float
     process_tokens_time: float = 0
@@ -376,6 +377,7 @@ class LMCStatsMonitor:
             num_tokens=num_tokens,
             local_hit_tokens=0,
             remote_hit_tokens=0,
+            num_retrieved_tokens=0,
             start_time=curr_time,
             end_time=0,
         )
@@ -391,10 +393,14 @@ class LMCStatsMonitor:
         self,
         retrieve_stats: RetrieveRequestStats,
         num_retrieved_tokens: int,
+        local_hit_tokens: int = 0,
+        remote_hit_tokens: int = 0,
     ):
         curr_time = time.perf_counter()
         assert retrieve_stats.request_id in self.retrieve_requests
-        retrieve_stats.local_hit_tokens = num_retrieved_tokens
+        retrieve_stats.num_retrieved_tokens = num_retrieved_tokens
+        retrieve_stats.local_hit_tokens = local_hit_tokens
+        retrieve_stats.remote_hit_tokens = remote_hit_tokens
         if retrieve_stats.end_time == 0:
             retrieve_stats.end_time = curr_time
         self.interval_hit_tokens += num_retrieved_tokens

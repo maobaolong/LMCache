@@ -71,8 +71,8 @@ logger = init_logger(__name__)
 # Type aliases for processed chunks
 # (cache_key, memory_obj, start_index, end_index)
 ProcessedChunk = Tuple[CacheEngineKey, MemoryObj, int, int]
-# (list of processed chunks, total kv size)
-ProcessTokensInternalResult = Tuple[List[ProcessedChunk], int]
+# (list of processed chunks, total kv size, dict of location -> token count)
+ProcessTokensInternalResult = Tuple[List[ProcessedChunk], int, Dict[str, int]]
 
 
 class CacheEngineEndSignal:
@@ -785,21 +785,26 @@ class LMCacheEngine:
         ret_mask = torch.zeros(len(tokens), dtype=torch.bool, device="cpu")
 
         reordered_chunks: List[ProcessedChunk] = []
+        location_token_counts: Dict[str, int] = {}
         if not self._is_passive():
             with retrieve_stats.profile_process_tokens():
                 if self.async_loading:
-                    reordered_chunks, tot_kv_size = self._async_process_tokens_internal(  # noqa: E501
-                        tokens,
-                        mask,
-                        ret_mask,
-                        **kwargs,
+                    reordered_chunks, tot_kv_size, location_token_counts = (
+                        self._async_process_tokens_internal(
+                            tokens,
+                            mask,
+                            ret_mask,
+                            **kwargs,
+                        )
                     )
                 else:
-                    reordered_chunks, tot_kv_size = self._process_tokens_internal(
-                        tokens,
-                        mask,
-                        ret_mask,
-                        **kwargs,
+                    reordered_chunks, tot_kv_size, location_token_counts = (
+                        self._process_tokens_internal(
+                            tokens,
+                            mask,
+                            ret_mask,
+                            **kwargs,
+                        )
                     )
 
         if self.save_only_first_rank:
@@ -838,10 +843,18 @@ class LMCacheEngine:
                 self.storage_manager.remove(key)
             memory_obj.ref_count_down()
 
-        retrieved_tokens = torch.sum(ret_mask)
+        retrieved_tokens = torch.sum(ret_mask).item()
+
+        # Categorize tokens as local or remote based on location
+        # LocalCPUBackend is considered local, everything else is remote
+        local_hit_tokens = location_token_counts.get("LocalCPUBackend", 0)
+        remote_hit_tokens = retrieved_tokens - local_hit_tokens
+
         self.stats_monitor.on_retrieve_finished(
             retrieve_stats,
             retrieved_tokens,
+            local_hit_tokens=local_hit_tokens,
+            remote_hit_tokens=remote_hit_tokens,
         )
         onload_time = retrieve_stats.time_to_retrieve()
         # The retrieved may be larger than the need_to_load
@@ -1011,8 +1024,27 @@ class LMCacheEngine:
         # synchronize the last layer
         next(mem_obj_consumer)
 
-        retrieved_tokens = torch.sum(ret_mask)
-        self.stats_monitor.on_retrieve_finished(monitor_req_id, retrieved_tokens)
+        retrieved_tokens = torch.sum(ret_mask).item()
+
+        # Categorize tokens as local or remote based on location
+        # NOTE: retrieve_layer currently only supports single location retrieval
+        # (see assertion at line 967). When multi-location support is added in the
+        # future, this logic will need to be updated to handle location_token_counts
+        # dict similar to the regular retrieve() method.
+        local_hit_tokens = 0
+        remote_hit_tokens = 0
+        if location is not None:
+            if location == "LocalCPUBackend":
+                local_hit_tokens = retrieved_tokens
+            else:
+                remote_hit_tokens = retrieved_tokens
+
+        self.stats_monitor.on_retrieve_finished(
+            monitor_req_id,
+            retrieved_tokens,
+            local_hit_tokens=local_hit_tokens,
+            remote_hit_tokens=remote_hit_tokens,
+        )
         if not self._is_passive():
             logger.info(
                 "[req_id=%s] Retrieved %d out of %d out of total %d tokens",
@@ -1519,6 +1551,7 @@ class LMCacheEngine:
 
         tot_kv_size = 0
         chunks: List[ProcessedChunk] = []
+        location_token_counts: Dict[str, int] = {}
         future = self.event_manager.pop_event(EventType.LOADING, kwargs["req_id"])
 
         # As mentioned in async_lookup_and_prefetch(), the future.result()
@@ -1529,7 +1562,7 @@ class LMCacheEngine:
             memory_obj_map: dict[CacheEngineKey, MemoryObj] = {}
         except Exception as e:
             logger.error(f"Error popping event for request {kwargs['req_id']}: {e}")
-            return [], 0
+            return [], 0, {}
 
         for backend_results in keyed_memory_objs:
             for key, memory_obj in backend_results:
@@ -1558,7 +1591,8 @@ class LMCacheEngine:
             if key not in used_keys:
                 mem_obj.ref_count_down()
 
-        return chunks, tot_kv_size
+        # TODO(rigginschen): return correct location_token_counts
+        return chunks, tot_kv_size, location_token_counts
 
     def _process_tokens_internal(
         self,
@@ -1576,11 +1610,16 @@ class LMCacheEngine:
             mask: Mask indicating valid token positions
             ret_mask: Output mask updated with cache hit positions
             **kwargs: Additional keyword arguments
+
+        Returns:
+            A tuple of (reordered_chunks, tot_kv_size, location_token_counts)
+            where location_token_counts is a dict mapping location to token count
         """
         assert self.storage_manager is not None
 
         tot_kv_size = 0
         reordered_chunks: List[ProcessedChunk] = []
+        location_token_counts: Dict[str, int] = {}
         request_configs = kwargs.get("request_configs")
         if request_configs is not None and len(request_configs) != 0:
             assert isinstance(request_configs, dict)
@@ -1628,6 +1667,12 @@ class LMCacheEngine:
                 tot_kv_size += memory_obj.get_size()
                 ret_mask[start:end] = True
 
+                # Track tokens by location
+                token_count = end - start
+                location_token_counts[location] = (
+                    location_token_counts.get(location, 0) + token_count
+                )
+
         if last_failed_block_start is not None:
             ret_mask[last_failed_block_start:] = False
 
@@ -1636,7 +1681,7 @@ class LMCacheEngine:
                 for key, memory_obj, start, end in reordered_chunks
                 if end < last_failed_block_start
             ]
-        return reordered_chunks, tot_kv_size
+        return reordered_chunks, tot_kv_size, location_token_counts
 
     def _broadcast_or_receive_memory_objs(
         self,
