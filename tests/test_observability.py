@@ -27,6 +27,7 @@ def test_on_retrieve_finished(stats_monitor):
     stats_monitor.on_retrieve_finished(
         retrieve_stats=stats_obj,
         num_retrieved_tokens=100,
+        local_hit_tokens=100,
     )
     stats = stats_monitor.get_stats_and_clear()
     assert stats.interval_retrieve_requests == 1
@@ -137,7 +138,9 @@ def test_retrieve_and_store_speed(stats_monitor):
     # Test retrieve speed calculation
     stats_obj_retrieve = stats_monitor.on_retrieve_request(num_tokens=1000)
     stats_monitor.on_retrieve_finished(
-        retrieve_stats=stats_obj_retrieve, num_retrieved_tokens=1000
+        retrieve_stats=stats_obj_retrieve,
+        num_retrieved_tokens=1000,
+        local_hit_tokens=1000,
     )
 
     # Test store speed calculation
@@ -198,6 +201,7 @@ def test_combined_operations(stats_monitor):
     stats_monitor.on_retrieve_finished(
         retrieve_stats=stats_obj_retrieve,
         num_retrieved_tokens=200,
+        local_hit_tokens=200,
     )
     stats_obj_store = stats_monitor.on_store_request(num_tokens=100)
     stats_monitor.on_store_finished(store_stats=stats_obj_store)

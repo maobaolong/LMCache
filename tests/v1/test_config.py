@@ -183,9 +183,11 @@ class TestValidateAndSetConfigValue:
             config, "extra_config", new_config, override=True
         )
         assert result is True
-        assert config.extra_config == {"key3": "value3"}
-        assert "key1" not in config.extra_config
-        assert "key2" not in config.extra_config
+        assert config.extra_config == {
+            "key1": "value1",
+            "key2": "value2",
+            "key3": "value3",
+        }
 
     def test_set_extra_config_override_false_merge(self):
         """Test that override=False merges extra_config dictionaries."""
