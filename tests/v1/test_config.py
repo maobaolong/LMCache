@@ -172,32 +172,30 @@ class TestValidateAndSetConfigValue:
         assert config.extra_config == {"key1": "value1", "key2": "value2"}
 
     def test_set_extra_config_override_true(self):
-        """Test that override=True completely replaces extra_config."""
+        """Test that 'override' field in value dict replaces extra_config."""
         config = LMCacheEngineConfig.from_defaults()
         # Set initial value
         config.extra_config = {"key1": "value1", "key2": "value2"}
 
-        # Override with new value
-        new_config = {"key3": "value3"}
-        result = validate_and_set_config_value(
-            config, "extra_config", new_config, override=True
-        )
+        # Override via 'override' field in value dict
+        new_config = {"key3": "value3", "override": True}
+        result = validate_and_set_config_value(config, "extra_config", new_config)
         assert result is True
         assert config.extra_config == {"key3": "value3"}
         assert "key1" not in config.extra_config
         assert "key2" not in config.extra_config
+        # 'override' field should be popped from value
+        assert "override" not in config.extra_config
 
-    def test_set_extra_config_override_false_merge(self):
-        """Test that override=False merges extra_config dictionaries."""
+    def test_set_extra_config_merge_default(self):
+        """Test that default behavior (no 'override' field) merges."""
         config = LMCacheEngineConfig.from_defaults()
         # Set initial value
         config.extra_config = {"key1": "value1", "key2": "value2"}
 
-        # Merge with new value (override=False)
+        # Merge with new value (default: no 'override' field)
         new_config = {"key2": "new_value2", "key3": "value3"}
-        result = validate_and_set_config_value(
-            config, "extra_config", new_config, override=False
-        )
+        result = validate_and_set_config_value(config, "extra_config", new_config)
         assert result is True
         # key1 should be preserved
         assert config.extra_config["key1"] == "value1"
@@ -206,66 +204,40 @@ class TestValidateAndSetConfigValue:
         # key3 should be added
         assert config.extra_config["key3"] == "value3"
 
-    def test_set_extra_config_override_false_with_json_string(self):
-        """Test merge with JSON string input when override=False."""
+    def test_set_extra_config_merge_with_json_string(self):
+        """Test merge with JSON string input (default merge mode)."""
         config = LMCacheEngineConfig.from_defaults()
         config.extra_config = {"existing_key": "existing_value"}
 
         json_str = '{"new_key": "new_value"}'
-        result = validate_and_set_config_value(
-            config, "extra_config", json_str, override=False
-        )
+        result = validate_and_set_config_value(config, "extra_config", json_str)
         assert result is True
         assert config.extra_config["existing_key"] == "existing_value"
         assert config.extra_config["new_key"] == "new_value"
 
-    def test_set_extra_config_override_false_current_none(self):
-        """Test override=False when current extra_config is None."""
+    def test_set_extra_config_merge_current_none(self):
+        """Test merge when current extra_config is None."""
         config = LMCacheEngineConfig.from_defaults()
         config.extra_config = None
 
         new_config = {"key1": "value1"}
-        result = validate_and_set_config_value(
-            config, "extra_config", new_config, override=False
-        )
-        assert result is True
-        assert config.extra_config == {"key1": "value1"}
-
-    def test_set_extra_config_override_false_new_value_none(self):
-        """Test override=False when new value is None, should keep current."""
-        config = LMCacheEngineConfig.from_defaults()
-        config.extra_config = {"key1": "value1"}
-
-        result = validate_and_set_config_value(
-            config, "extra_config", None, override=False
-        )
-        assert result is True
-        assert config.extra_config == {"key1": "value1"}
-
-    def test_set_extra_config_override_false_empty_string(self):
-        """Test override=False when new value is empty string."""
-        config = LMCacheEngineConfig.from_defaults()
-        config.extra_config = {"key1": "value1"}
-
-        result = validate_and_set_config_value(
-            config, "extra_config", "", override=False
-        )
-        assert result is True
-        # Empty string converts to None, so current value should be kept
-        assert config.extra_config == {"key1": "value1"}
-
-    def test_set_extra_config_default_override_is_true(self):
-        """Test that default behavior is override=True."""
-        config = LMCacheEngineConfig.from_defaults()
-        config.extra_config = {"key1": "value1"}
-
-        new_config = {"key2": "value2"}
-        # Don't pass override parameter, should default to True
         result = validate_and_set_config_value(config, "extra_config", new_config)
         assert result is True
-        # Should completely replace
-        assert config.extra_config == {"key2": "value2"}
-        assert "key1" not in config.extra_config
+        assert config.extra_config == {"key1": "value1"}
+
+    def test_set_extra_config_override_field_false_explicit(self):
+        """Test that override=False in value dict merges."""
+        config = LMCacheEngineConfig.from_defaults()
+        config.extra_config = {"key1": "value1"}
+
+        new_config = {"key2": "value2", "override": False}
+        result = validate_and_set_config_value(config, "extra_config", new_config)
+        assert result is True
+        # Should merge, not replace
+        assert config.extra_config["key1"] == "value1"
+        assert config.extra_config["key2"] == "value2"
+        # 'override' field should be popped
+        assert "override" not in config.extra_config
 
     def test_set_extra_config_invalid_json_string(self):
         """Test setting extra_config with invalid JSON string."""
@@ -288,7 +260,7 @@ class TestValidateAndSetConfigValue:
         result = validate_and_set_config_value(
             config, "chunk_size", 512, override=False
         )
-        assert result is True
+        assert result is False
         # Value should not be changed because override=False and key is user-set
         assert config.chunk_size == 256
 
@@ -329,7 +301,7 @@ class TestValidateAndSetConfigValue:
         result = validate_and_set_config_value(
             config, "remote_url", "http://example.com", override=False
         )
-        assert result is True
+        assert result is False
         # Value should NOT be changed because key is user-set (even though it's None)
         assert config.remote_url is None
 
@@ -589,7 +561,7 @@ class TestUserSetKeysTracking:
         result = validate_and_set_config_value(
             config, "chunk_size", 1024, override=False
         )
-        assert result is True
+        assert result is False
         # Value should NOT change because user set it
         assert config.chunk_size == 512
 
