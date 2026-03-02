@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generator, Optional, Union
 import os
@@ -558,6 +559,7 @@ class LMCacheConnectorV1Impl:
         self.force_skip_save = bool(os.environ.get("LMCACHE_FORCE_SKIP_SAVE", False))
         self._requests_priority: dict[str, int] = {}
         self._invalid_block_ids: set[int] = set()
+        self.enable_parallel_prefetch = config.enable_parallel_prefetch
 
     def _check_legacy_register_kv_caches(self) -> None:
         """Check for legacy connector without register_kv_caches implementation."""
@@ -767,6 +769,7 @@ class LMCacheConnectorV1Impl:
         assert self.lmcache_engine is not None
 
         self.layerwise_retrievers = []
+        prefetch_requests = []
 
         for idx, request in enumerate(metadata.requests):
             if request.load_spec is None or not request.load_spec.can_load:
@@ -827,42 +830,184 @@ class LMCacheConnectorV1Impl:
                     next(layerwise_retriever)
                     self.layerwise_retrievers.append(layerwise_retriever)
             else:
-                ret_token_mask = self.lmcache_engine.retrieve(
+                prefetch_requests.append(
+                    (request, tokens, token_mask, slot_mapping, lmcache_cached_tokens)
+                )
+
+        if self.enable_parallel_prefetch:
+            self._parallel_prefetch_and_retrieve(
+                prefetch_requests,
+                kvcaches,
+            )
+        else:
+            self._sequential_retrieve(
+                prefetch_requests,
+                kvcaches,
+            )
+
+    def _sequential_retrieve(
+        self,
+        prefetch_requests,
+        kvcaches,
+    ):
+        """Retrieve KV cache sequentially for each
+        request (original behavior).
+
+        Args:
+            prefetch_requests: list of tuples
+                (request, tokens, token_mask,
+                 slot_mapping, lmcache_cached_tokens)
+            kvcaches: list of KV cache tensors
+        """
+        if not prefetch_requests:
+            return
+
+        engine = self.lmcache_engine
+
+        for (
+            request,
+            tokens,
+            token_mask,
+            slot_mapping,
+            lmcache_cached_tokens,
+        ) in prefetch_requests:
+            ret_token_mask = engine.retrieve(
+                tokens[:lmcache_cached_tokens],
+                token_mask[:lmcache_cached_tokens],
+                kvcaches=kvcaches,
+                slot_mapping=(slot_mapping[:lmcache_cached_tokens]),
+                request_configs=request.request_configs,
+                req_id=request.req_id,
+            )
+
+            self._check_retrieve_result(
+                request,
+                token_mask[:lmcache_cached_tokens],
+                ret_token_mask,
+                slot_mapping[:lmcache_cached_tokens],
+                lmcache_cached_tokens,
+            )
+
+    def _parallel_prefetch_and_retrieve(
+        self,
+        prefetch_requests,
+        kvcaches,
+    ):
+        """Run CPU prefetch in parallel, then write to
+        GPU sequentially.
+
+        Args:
+            prefetch_requests: list of tuples
+                (request, tokens, token_mask,
+                 slot_mapping, lmcache_cached_tokens)
+            kvcaches: list of KV cache tensors
+        """
+        if not prefetch_requests:
+            return
+
+        engine = self.lmcache_engine
+
+        # Phase 1: Parallel CPU prefetch via thread pool
+        with ThreadPoolExecutor(
+            max_workers=len(prefetch_requests),
+        ) as pool:
+            future_to_idx = {}
+            for idx, (
+                request,
+                tokens,
+                token_mask,
+                slot_mapping,
+                lmcache_cached_tokens,
+            ) in enumerate(prefetch_requests):
+                future = pool.submit(
+                    engine.prefetch_chunks,
                     tokens[:lmcache_cached_tokens],
                     token_mask[:lmcache_cached_tokens],
                     kvcaches=kvcaches,
-                    slot_mapping=slot_mapping[:lmcache_cached_tokens],
-                    request_configs=request.request_configs,
+                    slot_mapping=(slot_mapping[:lmcache_cached_tokens]),
+                    request_configs=(request.request_configs),
                     req_id=request.req_id,
                 )
+                future_to_idx[future] = idx
 
-                # Check the result
-                num_retrieved_tokens = ret_token_mask.sum().item()
-                num_expected_tokens = (
-                    lmcache_cached_tokens - request.load_spec.vllm_cached_tokens
-                )
-                if num_retrieved_tokens < num_expected_tokens:
-                    logger.error(
-                        "Request %s"
-                        "The number of retrieved tokens is less than the "
-                        "expected number of tokens! This should not happen!",
-                        request.req_id,
-                    )
-                    logger.error(
-                        "Num retrieved tokens: %d, num expected tokens: %d",
-                        num_retrieved_tokens,
-                        num_expected_tokens,
-                    )
-                    """
-                    Report failed block IDs in case of partial failure.
-                    """
-                    missing_blocks = self.record_failed_blocks(
-                        request.req_id,
-                        token_mask[:lmcache_cached_tokens],
-                        ret_token_mask,
-                        slot_mapping[:lmcache_cached_tokens],
-                    )
-                    self._invalid_block_ids.update(missing_blocks)
+            # Collect results preserving order
+            prefetch_results = [None] * len(prefetch_requests)
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                prefetch_results[idx] = future.result()
+
+        # Phase 2: Sequential GPU write
+        for idx, (
+            request,
+            tokens,
+            token_mask,
+            slot_mapping,
+            lmcache_cached_tokens,
+        ) in enumerate(prefetch_requests):
+            prefetch_result = prefetch_results[idx]
+            if prefetch_result is None:
+                continue
+
+            ret_token_mask = engine.retrieve_with_prefetched(
+                tokens[:lmcache_cached_tokens],
+                prefetch_result,
+                kvcaches=kvcaches,
+                slot_mapping=(slot_mapping[:lmcache_cached_tokens]),
+                request_configs=(request.request_configs),
+                req_id=request.req_id,
+            )
+
+            self._check_retrieve_result(
+                request,
+                token_mask[:lmcache_cached_tokens],
+                ret_token_mask,
+                slot_mapping[:lmcache_cached_tokens],
+                lmcache_cached_tokens,
+            )
+
+    def _check_retrieve_result(
+        self,
+        request: ReqMeta,
+        token_mask: torch.Tensor,
+        ret_token_mask: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        lmcache_cached_tokens: int,
+    ):
+        """Check retrieve result and record failed
+        blocks if needed.
+
+        Args:
+            request: the request metadata.
+            token_mask: expected token mask.
+            ret_token_mask: actual retrieved token mask.
+            slot_mapping: slot mapping tensor.
+            lmcache_cached_tokens: number of tokens
+                cached in lmcache.
+        """
+        num_retrieved = ret_token_mask.sum().item()
+        assert request.load_spec is not None
+        num_expected = lmcache_cached_tokens - request.load_spec.vllm_cached_tokens
+        if num_retrieved < num_expected:
+            logger.error(
+                "Request %s "
+                "The number of retrieved "
+                "tokens is less than the "
+                "expected number of tokens!"
+                " This should not happen!",
+                request.req_id,
+            )
+            logger.error(
+                "Num retrieved tokens: %d, num expected tokens: %d",
+                num_retrieved,
+                num_expected,
+            )
+            missing_blocks = self.record_failed_blocks(
+                request.req_id,
+                token_mask,
+                ret_token_mask,
+                slot_mapping,
+            )
+            self._invalid_block_ids.update(missing_blocks)
 
     def record_failed_blocks(
         self,

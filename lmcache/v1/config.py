@@ -287,6 +287,17 @@ _CONFIG_DEFINITIONS: dict[str, dict[str, Any]] = {
         "default": False,
         "env_converter": _to_bool,
     },
+    "enable_parallel_prefetch": {
+        "type": bool,
+        "default": False,
+        "env_converter": _to_bool,
+        "description": (
+            "Enable parallel CPU prefetch for multiple "
+            "retrieve requests using a thread pool. "
+            "When disabled, requests are retrieved "
+            "sequentially (original behavior)."
+        ),
+    },
     "internal_api_server_enabled": {
         "type": bool,
         "default": False,

@@ -70,6 +70,9 @@ ProcessedChunk = Tuple[CacheEngineKey, MemoryObj, int, int]
 # (list of processed chunks, total kv size)
 ProcessTokensInternalResult = Tuple[List[ProcessedChunk], int]
 
+# (list of processed chunks, total kv size, ret_mask, num_required_tokens)
+PrefetchResult = Tuple[List[ProcessedChunk], int, torch.Tensor, int]
+
 
 class CacheEngineEndSignal:
     pass
@@ -881,6 +884,155 @@ class LMCacheEngine:
                 tot_kv_size / 1024**3,
                 onload_time * 1000,
                 tot_kv_size / onload_time / 1024**3 if onload_time > 0 else 0,
+            )
+        return ret_mask
+
+    @_lmcache_nvtx_annotate
+    @torch.inference_mode()
+    def prefetch_chunks(
+        self,
+        tokens: Union[torch.Tensor, list[int]],
+        mask: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> Optional[PrefetchResult]:
+        """Prefetch KV cache chunks from storage backends
+        (CPU I/O only, no GPU writes).
+
+        This method performs the CPU-side data fetching phase
+        of retrieve, which can be called concurrently for
+        multiple requests via a thread pool.
+
+        :param tokens: The tokens for KV cache lookup.
+        :param mask: Boolean mask for tokens.
+        :param **kwargs: Additional arguments (kvcaches,
+            slot_mapping, request_configs, req_id, etc.)
+
+        :return: PrefetchResult tuple or None if unhealthy.
+        """
+        if not self.is_healthy():
+            logger.warning("LMCache is unhealthy, skipping prefetch")
+            return None
+
+        assert self.gpu_connector is not None, "gpu_connector is required for prefetch"
+
+        if mask is not None:
+            num_required_tokens = torch.sum(mask).item()
+        else:
+            num_required_tokens = len(tokens)
+
+        ret_mask = torch.zeros(len(tokens), dtype=torch.bool, device="cpu")
+
+        reordered_chunks: List[ProcessedChunk] = []
+        tot_kv_size = 0
+        if not self._is_passive():
+            if self.async_loading:
+                reordered_chunks, tot_kv_size = self._async_process_tokens_internal(
+                    tokens,
+                    mask,
+                    ret_mask,
+                    **kwargs,
+                )
+            else:
+                reordered_chunks, tot_kv_size = self._process_tokens_internal(
+                    tokens,
+                    mask,
+                    ret_mask,
+                    **kwargs,
+                )
+
+        return (
+            reordered_chunks,
+            tot_kv_size,
+            ret_mask,
+            num_required_tokens,
+        )
+
+    @_lmcache_nvtx_annotate
+    @torch.inference_mode()
+    def retrieve_with_prefetched(
+        self,
+        tokens: Union[torch.Tensor, list[int]],
+        prefetch_result: PrefetchResult,
+        **kwargs,
+    ) -> torch.Tensor:
+        """Complete the retrieve using pre-fetched chunks.
+
+        Handles broadcast, GPU write, cleanup, and stats.
+        Must be called sequentially (not concurrently)
+        because GPU connector is not thread-safe.
+
+        :param tokens: The original token tensor.
+        :param prefetch_result: The result from
+            prefetch_chunks().
+        :param **kwargs: Same kwargs as retrieve().
+        :return: Boolean mask of retrieved tokens.
+        """
+        (
+            reordered_chunks,
+            tot_kv_size,
+            ret_mask,
+            num_required_tokens,
+        ) = prefetch_result
+
+        assert self.gpu_connector is not None, "gpu_connector is required for retrieve"
+
+        req_id = self._get_req_id(kwargs)
+
+        # KVCache Check logging
+        self._log_kvcache_for_check(
+            operation="retrieve",
+            kwargs=kwargs,
+            token_count=num_required_tokens,
+            require_req_id=True,
+        )
+
+        retrieve_stats = self.stats_monitor.on_retrieve_request(num_required_tokens)
+
+        if self.save_only_first_rank:
+            with retrieve_stats.profile_broadcast():
+                with torch.cuda.stream(self.broadcast_stream):
+                    self._broadcast_or_receive_memory_objs(
+                        reordered_chunks,
+                        ret_mask,
+                    )
+                if not hasattr(self.gpu_connector, "load_stream"):
+                    self.broadcast_stream.synchronize()
+
+        if len(reordered_chunks) > 0:
+            with retrieve_stats.profile_to_gpu():
+                _, memory_objs, starts, ends = zip(*reordered_chunks, strict=False)
+                self.gpu_connector.batched_to_gpu(
+                    list(memory_objs),
+                    list(starts),
+                    list(ends),
+                    **kwargs,
+                )
+
+        for key, memory_obj, _, _ in reordered_chunks:
+            if self.remove_after_retrieve and not self._is_passive():
+                assert self.storage_manager is not None
+                self.storage_manager.remove(key)
+            memory_obj.ref_count_down()
+
+        retrieved_tokens = torch.sum(ret_mask)
+        self.stats_monitor.on_retrieve_finished(
+            retrieve_stats,
+            retrieved_tokens,
+        )
+        onload_time = retrieve_stats.time_to_retrieve()
+        if not self._is_passive():
+            logger.info(
+                "[req_id=%s] Retrieved %d out of %d required"
+                " tokens (from %d total tokens). "
+                "size: %.4f gb, cost %.4f ms, "
+                "throughput: %.4f GB/s;",
+                req_id,
+                retrieved_tokens,
+                num_required_tokens,
+                len(tokens),
+                tot_kv_size / 1024**3,
+                onload_time * 1000,
+                (tot_kv_size / onload_time / 1024**3 if onload_time > 0 else 0),
             )
         return ret_mask
 
