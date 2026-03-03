@@ -609,6 +609,14 @@ class MooncakestoreConnector(RemoteConnector):
             )
             raise
 
+    def support_ping(self) -> bool:
+        return hasattr(self.store, "health_check") and callable(self.store.health_check)
+
+    async def ping(self) -> int:
+        if not self.support_ping():
+            return 0
+        return await asyncio.to_thread(self.store.health_check)
+
     @no_type_check
     async def list(self) -> List[str]:
         pass
