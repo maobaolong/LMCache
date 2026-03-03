@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generator, Optional, Union
 import os
+import time
 
 # Third Party
 from vllm.config import (
@@ -834,6 +835,7 @@ class LMCacheConnectorV1Impl:
                     (request, tokens, token_mask, slot_mapping, lmcache_cached_tokens)
                 )
 
+        load_start = time.monotonic()
         if self.enable_parallel_prefetch:
             self._parallel_prefetch_and_retrieve(
                 prefetch_requests,
@@ -843,6 +845,14 @@ class LMCacheConnectorV1Impl:
             self._sequential_retrieve(
                 prefetch_requests,
                 kvcaches,
+            )
+        if prefetch_requests and not self.lmcache_engine.is_passive():
+            elapsed = time.monotonic() - load_start
+            logger.info(
+                "start_load_kv: num_requests=%d, parallel=%s, elapsed=%.4fs",
+                len(prefetch_requests),
+                self.enable_parallel_prefetch,
+                elapsed,
             )
 
     def _sequential_retrieve(

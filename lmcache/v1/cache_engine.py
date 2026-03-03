@@ -394,7 +394,7 @@ class LMCacheEngine:
             "gpu_connector is required for store operation"
         )
 
-        if self._is_passive():
+        if self.is_passive():
             logger.debug(f"rank={self.metadata.worker_id} ignore store")
             return
 
@@ -801,7 +801,7 @@ class LMCacheEngine:
         ret_mask = torch.zeros(len(tokens), dtype=torch.bool, device="cpu")
 
         reordered_chunks: List[ProcessedChunk] = []
-        if not self._is_passive():
+        if not self.is_passive():
             with retrieve_stats.profile_process_tokens():
                 if self.async_loading:
                     reordered_chunks, tot_kv_size = self._async_process_tokens_internal(  # noqa: E501
@@ -849,7 +849,7 @@ class LMCacheEngine:
         # TODO(Jiayi): Remove the following for loop with batched operations
         # TODO(Jiayi): Need to refactor the `remove_after_retrieve` logic.
         for key, memory_obj, _, _ in reordered_chunks:
-            if self.remove_after_retrieve and not self._is_passive():
+            if self.remove_after_retrieve and not self.is_passive():
                 assert self.storage_manager is not None
                 self.storage_manager.remove(key)
             memory_obj.ref_count_down()
@@ -872,7 +872,7 @@ class LMCacheEngine:
         # Skip chunk 1, retrieve chunk 2, overwrite [256..287] (32-token overlap)
         # need_to_load: 512 - 288 = 224 tokens
         # retrieved: 256 tokens
-        if not self._is_passive():
+        if not self.is_passive():
             logger.info(
                 "[req_id=%s] Retrieved %d out of %d required tokens "
                 "(from %d total tokens). size: %.4f gb, "
@@ -924,7 +924,7 @@ class LMCacheEngine:
 
         reordered_chunks: List[ProcessedChunk] = []
         tot_kv_size = 0
-        if not self._is_passive():
+        if not self.is_passive():
             if self.async_loading:
                 reordered_chunks, tot_kv_size = self._async_process_tokens_internal(
                     tokens,
@@ -1009,7 +1009,7 @@ class LMCacheEngine:
                 )
 
         for key, memory_obj, _, _ in reordered_chunks:
-            if self.remove_after_retrieve and not self._is_passive():
+            if self.remove_after_retrieve and not self.is_passive():
                 assert self.storage_manager is not None
                 self.storage_manager.remove(key)
             memory_obj.ref_count_down()
@@ -1020,7 +1020,7 @@ class LMCacheEngine:
             retrieved_tokens,
         )
         onload_time = retrieve_stats.time_to_retrieve()
-        if not self._is_passive():
+        if not self.is_passive():
             logger.info(
                 "[req_id=%s] Retrieved %d out of %d required"
                 " tokens (from %d total tokens). "
@@ -1172,7 +1172,7 @@ class LMCacheEngine:
 
         retrieved_tokens = torch.sum(ret_mask)
         self.stats_monitor.on_retrieve_finished(monitor_req_id, retrieved_tokens)
-        if not self._is_passive():
+        if not self.is_passive():
             logger.info(
                 "[req_id=%s] Retrieved %d out of %d out of total %d tokens",
                 req_id,
@@ -1878,7 +1878,7 @@ class LMCacheEngine:
                 )
                 reordered_chunks.append((None, memory_obj, start, end))
 
-    def _is_passive(self):
+    def is_passive(self):
         """
         A 'passive' CacheEngine means that the node itself will not store/retrieve
         the data directly, but from the "active" worker (i.e., rank 0 in MLA)
