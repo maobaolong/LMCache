@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 import os
 import threading
+import time
 
 # Third Party
 import torch
@@ -448,6 +449,105 @@ class LMCacheMPSchedulerAdapter:
             end=end,
             request_id=request_id,
         )
+
+
+class LMCacheMPPollingSchedulerAdapter(LMCacheMPSchedulerAdapter):
+    """LMCacheMPSchedulerAdapter subclass that overrides check_lookup_result
+    to block until the prefetch job is complete.
+
+    Unlike the base class which returns None immediately when the result is
+    not yet available, this class polls the server in a loop and only returns
+    once the prefetch job has finished.  This avoids the need for the caller
+    to repeatedly invoke check_lookup_result across multiple scheduling steps.
+    """
+
+    def __init__(
+        self,
+        server_url: str,
+        context: zmq.Context,
+        model_name: str,
+        world_size: int,
+        kv_rank: int,
+        vllm_block_size: int,
+        tp_size: int = 1,
+        poll_interval: float = 0.005,
+        lookup_timeout: float = 5.0,
+    ):
+        """
+        Args:
+            server_url: The server URL for the LMCache message queue.
+            context: The ZMQ context.
+            model_name: The model name used for LMCache keys.
+            world_size: The world size used for LMCache keys.
+            kv_rank: The kv rank used for LMCache keys.
+            vllm_block_size: The block size used in vLLM.
+            tp_size: Tensor-parallel size for MLA multi-reader locking.
+            poll_interval: Interval in seconds between polling attempts
+                (default 5ms).
+            lookup_timeout: Maximum time in seconds to wait for a prefetch
+                job to complete before giving up (default 5s). When the
+                timeout is exceeded, 0 is returned so the request proceeds
+                with normal inference without any KV cache hit.
+        """
+        super().__init__(
+            server_url=server_url,
+            context=context,
+            model_name=model_name,
+            world_size=world_size,
+            kv_rank=kv_rank,
+            vllm_block_size=vllm_block_size,
+            tp_size=tp_size,
+        )
+        self._poll_interval = poll_interval
+        self._lookup_timeout = lookup_timeout
+
+    @_lmcache_nvtx_annotate
+    def check_lookup_result(self, request_id: str) -> int:
+        """Block until the prefetch job for request_id is complete and return
+        the matched token count.
+
+        Overrides the base class non-blocking implementation: instead of
+        returning None when the result is not yet available, this method
+        polls the server repeatedly until the prefetch job finishes.
+
+        Args:
+            request_id: The ID of the lookup request submitted in
+                ``maybe_submit_lookup_request``.
+
+        Returns:
+            An integer representing the total number of tokens matched
+            in LMCache (prefix matching).
+        """
+        assert request_id in self._lookup_job_ids, (
+            f"Lookup request for request_id={request_id} has not been submitted"
+        )
+
+        job_id = self._lookup_job_ids[request_id]
+
+        if job_id in self._finished_lookup_jobs:
+            return self._finished_lookup_jobs[job_id] * self.chunk_size
+
+        deadline = time.monotonic() + self._lookup_timeout
+        while True:
+            result = send_lmcache_request(
+                self.mq_client,
+                RequestType.QUERY_PREFETCH_STATUS,
+                [job_id],
+            ).result()
+            if result is not None:
+                self._finished_lookup_jobs[job_id] = result
+                return result * self.chunk_size
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Lookup timeout (%.1fs) exceeded for request_id=%s, "
+                    "job_id=%s. Returning 0 matched tokens.",
+                    self._lookup_timeout,
+                    request_id,
+                    job_id,
+                )
+                self._lookup_job_ids.pop(request_id, None)
+                return 0
+            time.sleep(self._poll_interval)
 
 
 class LMCacheMPWorkerAdapter:
