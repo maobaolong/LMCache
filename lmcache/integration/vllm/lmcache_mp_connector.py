@@ -26,6 +26,7 @@ try:
     from lmcache.integration.vllm.vllm_multi_process_adapter import (
         LMCacheMPPollingSchedulerAdapter,
         LMCacheMPSchedulerAdapter,
+        LMCacheMPSyncSchedulerAdapter,
         LMCacheMPWorkerAdapter,
         LoadStoreOp,
     )
@@ -33,6 +34,7 @@ except ImportError:
     from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_integration import (
         LMCacheMPPollingSchedulerAdapter,
         LMCacheMPSchedulerAdapter,
+        LMCacheMPSyncSchedulerAdapter,
         LMCacheMPWorkerAdapter,
         LoadStoreOp,
     )
@@ -127,6 +129,27 @@ def create_polling_scheduler_adapter(
         vllm_config,
     )
     return LMCacheMPPollingSchedulerAdapter(
+        server_url,
+        zmq_context,
+        vllm_config.model_config.model,
+        world_size,
+        kv_rank,
+        vllm_config.cache_config.block_size,
+    )
+
+
+def create_sync_scheduler_adapter(
+    server_url: str, zmq_context: zmq.Context, vllm_config: VllmConfig
+) -> LMCacheMPSyncSchedulerAdapter:
+    """Create a LMCacheMPSyncSchedulerAdapter that uses the synchronous
+    SYNC_LOOKUP protocol (single round-trip, L2 load deferred to RETRIEVE).
+    """
+    world_size, kv_rank = extract_world_size_and_kv_rank(
+        vllm_config.parallel_config.world_size,
+        vllm_config.parallel_config.rank,
+        vllm_config,
+    )
+    return LMCacheMPSyncSchedulerAdapter(
         server_url,
         zmq_context,
         vllm_config.model_config.model,
@@ -432,12 +455,18 @@ class LMCacheMPConnector(KVConnectorBase_V1):
         self.use_sync_lookup: bool = vllm_config.kv_transfer_config.get_from_extra_config(
             "lmcache.mp.sync_lookup", False
         )
+        self.use_two_stage: bool = vllm_config.kv_transfer_config.get_from_extra_config(
+            "lmcache.mp.use_two_stage", False
+        )
 
         server_url = f"{server_host}:{server_port}"
         zmq_context = zmq.Context.instance()
         if self.role == KVConnectorRole.SCHEDULER:
-            if self.use_sync_lookup:
-                # 使用后台轮询线程的 adapter，避免阻塞 server worker 线程
+            if self.use_two_stage:
+                self.scheduler_adapter = create_sync_scheduler_adapter(
+                    server_url, zmq_context, vllm_config
+                )
+            elif self.use_sync_lookup:
                 self.scheduler_adapter = create_polling_scheduler_adapter(
                     server_url, zmq_context, vllm_config
                 )

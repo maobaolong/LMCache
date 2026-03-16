@@ -201,8 +201,12 @@ class LMCacheMPSchedulerAdapter:
         self.mq_client = MessageQueueClient(server_url, context)
         self._mq_timeout = mq_timeout
 
-        # Synchronous lookup state: request_id -> hit count (in chunks)
-        self._lookup_hit_counts: dict[str, int] = {}
+        # Two-phase lookup state:
+        # - phase 1: request_id -> server prefetch job ID
+        # - phase 2: job_id -> matched chunk count (will be cached)
+        # The cached lookup result will be cleared by `cleanup_lookup_result`
+        self._lookup_job_ids: dict[str, int] = {}
+        self._finished_lookup_jobs: dict[int, int] = {}
 
         self.model_name = model_name
         self.world_size = world_size
@@ -246,11 +250,11 @@ class LMCacheMPSchedulerAdapter:
         token_ids: list[int],
     ):
         """
-        Submit a synchronous lookup request to LMCache.
+        Submit a new lookup request to LMCache if there is no ongoing request.
 
-        Sends a SYNC_LOOKUP request to the server and blocks until the
-        hit count is returned.  Unlike the old two-phase protocol, this
-        completes in a single round-trip — no polling is needed.
+        Sends a LOOKUP request to the server and blocks until a prefetch
+        job ID is returned.  The actual prefetch result can then be polled
+        via ``check_lookup_result``.
 
         Args:
             request_id: The ID of the lookup request. The same ID indicates it's
@@ -270,8 +274,8 @@ class LMCacheMPSchedulerAdapter:
         if not self.is_healthy:
             return
 
-        if request_id in self._lookup_hit_counts:
-            # Skip if there is already a lookup result
+        if request_id in self._lookup_job_ids:
+            # Skip if there is already a lookup request
             return
 
         aligned_end = (len(token_ids) // self.chunk_size) * self.chunk_size
@@ -285,11 +289,11 @@ class LMCacheMPSchedulerAdapter:
 
         future = send_lmcache_request(
             self.mq_client,
-            RequestType.SYNC_LOOKUP,
+            RequestType.LOOKUP,
             [key, self.tp_size],
         )
         try:
-            hit_chunks = future.result(timeout=self._mq_timeout)
+            job_id = future.result(timeout=self._mq_timeout)
         except TimeoutError:
             logger.warning(
                 "LOOKUP request timed out after %ss. Marking server as unhealthy.",
@@ -297,16 +301,16 @@ class LMCacheMPSchedulerAdapter:
             )
             self._health_event.clear()
             return
-        self._lookup_hit_counts[request_id] = hit_chunks
+        self._lookup_job_ids[request_id] = job_id
 
     @_lmcache_nvtx_annotate
-    def check_lookup_result(self, request_id: str) -> int:
+    def check_lookup_result(self, request_id: str) -> int | None:
         """
-        Return the result of a previously submitted lookup request.
+        Check the result of a previously submitted lookup request.
 
-        With the synchronous SYNC_LOOKUP protocol, the hit count is
-        already available — this method returns it immediately without
-        any network call.
+        Sends a QUERY_PREFETCH_STATUS request to the server and blocks
+        until the server responds.  Returns the matched token count
+        when the prefetch is complete, or None if still in progress.
 
         Args:
             request_id: The ID of the lookup request submitted in
@@ -314,13 +318,42 @@ class LMCacheMPSchedulerAdapter:
 
         Returns:
             An integer representing the total number of tokens matched
-            in LMCache (prefix matching).
+            in LMCache (prefix matching), or None if still in progress.
         """
-        if request_id not in self._lookup_hit_counts:
-            # No result — either unhealthy at submit time or already cleaned up
+        if request_id not in self._lookup_job_ids:
+            # No job — either unhealthy at submit time or already cleaned up
             return 0
 
-        return self._lookup_hit_counts[request_id] * self.chunk_size
+        if not self.is_healthy:
+            self._lookup_job_ids.pop(request_id, None)
+            return 0
+
+        job_id = self._lookup_job_ids[request_id]
+
+        if job_id in self._finished_lookup_jobs:
+            return self._finished_lookup_jobs[job_id] * self.chunk_size
+
+        try:
+            result = send_lmcache_request(
+                self.mq_client,
+                RequestType.QUERY_PREFETCH_STATUS,
+                [job_id],
+            ).result(timeout=self._mq_timeout)
+        except TimeoutError:
+            logger.warning(
+                "QUERY_PREFETCH_STATUS timed out after %ss. "
+                "Marking server as unhealthy.",
+                self._mq_timeout,
+            )
+            self._health_event.clear()
+            self._lookup_job_ids.pop(request_id, None)
+            return 0
+
+        if result is None:
+            return None
+
+        self._finished_lookup_jobs[job_id] = result
+        return result * self.chunk_size
 
     def num_blocks_per_chunk(self) -> int:
         """
@@ -335,7 +368,9 @@ class LMCacheMPSchedulerAdapter:
         Args:
             request_id: The ID of the finished request.
         """
-        self._lookup_hit_counts.pop(request_id, None)
+        job_id = self._lookup_job_ids.pop(request_id, None)
+        if job_id is not None:
+            self._finished_lookup_jobs.pop(job_id, None)
 
     def free_lookup_locks(
         self,
@@ -410,6 +445,103 @@ class LMCacheMPSchedulerAdapter:
             end=end,
             request_id=request_id,
         )
+
+
+class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
+    """LMCacheMPSchedulerAdapter subclass that uses the synchronous
+    SYNC_LOOKUP protocol instead of the two-phase LOOKUP + polling path.
+
+    The SYNC_LOOKUP RPC performs L1 prefix scan and L2 existence check
+    in a single blocking round-trip, returning the hit count directly.
+    L2-to-L1 data movement is deferred to the RETRIEVE call, overlapping
+    it with the forward pass of other scheduled requests.
+    """
+
+    def __init__(
+        self,
+        server_url: str,
+        context: zmq.Context,
+        model_name: str,
+        world_size: int,
+        kv_rank: int,
+        vllm_block_size: int,
+        tp_size: int = 1,
+        mq_timeout: float = DEFAULT_MQ_TIMEOUT,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+    ):
+        super().__init__(
+            server_url=server_url,
+            context=context,
+            model_name=model_name,
+            world_size=world_size,
+            kv_rank=kv_rank,
+            vllm_block_size=vllm_block_size,
+            tp_size=tp_size,
+            mq_timeout=mq_timeout,
+            heartbeat_interval=heartbeat_interval,
+        )
+        # Override base-class async state with sync state
+        self._lookup_hit_counts: dict[str, int] = {}
+
+    @_lmcache_nvtx_annotate
+    def maybe_submit_lookup_request(
+        self,
+        request_id: str,
+        token_ids: list[int],
+    ):
+        """
+        Submit a synchronous lookup request to LMCache.
+
+        Sends a SYNC_LOOKUP request to the server and blocks until the
+        hit count is returned.  Unlike the two-phase protocol in the
+        base class, this completes in a single round-trip.
+        """
+        if not self.is_healthy:
+            return
+
+        if request_id in self._lookup_hit_counts:
+            return
+
+        aligned_end = (len(token_ids) // self.chunk_size) * self.chunk_size
+
+        key = self._create_key(
+            token_ids,
+            start=0,
+            end=aligned_end,
+            request_id=request_id,
+        ).no_worker_id_version()
+
+        future = send_lmcache_request(
+            self.mq_client,
+            RequestType.SYNC_LOOKUP,
+            [key, self.tp_size],
+        )
+        try:
+            hit_chunks = future.result(timeout=self._mq_timeout)
+        except TimeoutError:
+            logger.warning(
+                "SYNC_LOOKUP request timed out after %ss. "
+                "Marking server as unhealthy.",
+                self._mq_timeout,
+            )
+            self._health_event.clear()
+            return
+        self._lookup_hit_counts[request_id] = hit_chunks
+
+    @_lmcache_nvtx_annotate
+    def check_lookup_result(self, request_id: str) -> int:
+        """
+        Return the hit count from a prior SYNC_LOOKUP request.
+
+        The result is already available — no network call needed.
+        """
+        if request_id not in self._lookup_hit_counts:
+            return 0
+        return self._lookup_hit_counts[request_id] * self.chunk_size
+
+    def cleanup_lookup_result(self, request_id: str) -> None:
+        """Clean up sync lookup state for a finished request."""
+        self._lookup_hit_counts.pop(request_id, None)
 
 
 class LMCacheMPPollingSchedulerAdapter(LMCacheMPSchedulerAdapter):

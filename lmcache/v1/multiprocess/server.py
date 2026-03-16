@@ -93,7 +93,7 @@ def compute_extra_count(
     MLA: TP does not split KV caches, all TP workers
       share the same object. vLLM passes world_size
       already divided by tp_size (e.g. world_size=1
-      for TP=4 PP=1), so ipc_keys_to_object_keys
+      for TP=4 PP=1), so ipc_key_to_object_keys
       only produces 1 ObjectKey per chunk.  All TP
       workers retrieve that same ObjectKey, hence
       extra_count = tp_size - 1.
@@ -719,11 +719,11 @@ class MPCacheEngine:
 
         extra_count = compute_extra_count(tp_size, world_size)
 
-        ipc_keys = key.to_hash_keys(self.token_hasher)
-        if not ipc_keys:
+        chunk_hashes = self.token_hasher.compute_chunk_hashes(list(key.token_ids))
+        if not chunk_hashes:
             return 0
 
-        obj_keys = ipc_keys_to_object_keys(ipc_keys)
+        obj_keys = ipc_key_to_object_keys(key, chunk_hashes)
 
         hit_count, remaining_keys, l2_lookup_results = (
             self.storage_manager.synchronous_lookup_and_lock(
@@ -738,10 +738,10 @@ class MPCacheEngine:
                 l2_lookup_results=l2_lookup_results,
                 layout_desc=layout_desc,
                 extra_count=extra_count,
-                world_size=ipc_keys[0].world_size,
+                world_size=key.world_size,
             )
 
-        found_count = hit_count // ipc_keys[0].world_size
+        found_count = hit_count // key.world_size
 
         log_telemetry(
             make_end_event(
