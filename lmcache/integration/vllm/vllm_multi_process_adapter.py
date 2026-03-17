@@ -30,6 +30,8 @@ logger = init_logger(__name__)
 DEFAULT_MQ_TIMEOUT: float = 300.0
 # Interval (seconds) between periodic heartbeat pings to the server.
 DEFAULT_HEARTBEAT_INTERVAL: float = 10.0
+# Time (seconds) before the heartbeat thread init.
+DEFAULT_HEARTBEAT_INIT_WAIT: float = 60.0
 
 
 def wrap_kv_caches(kv_caches: dict[str, torch.Tensor]) -> KVCache:
@@ -109,6 +111,7 @@ class HeartbeatThread(PeriodicThread):
         mq_client: MessageQueueClient,
         health_event: threading.Event,
         interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+        init_wait: float = DEFAULT_HEARTBEAT_INIT_WAIT,
     ):
         """
         Args:
@@ -118,11 +121,13 @@ class HeartbeatThread(PeriodicThread):
                 Adapters check this event to decide whether to proceed
                 with operations or enter degraded mode.
             interval: Seconds between heartbeat pings and ping timeout.
+            init_wait: Seconds to wait before first heartbeat ping.
         """
         super().__init__(
             name="lmcache-heartbeat",
             interval=interval,
             level=ThreadLevel.CRITICAL,
+            init_wait=init_wait,
         )
         self._mq_client = mq_client
         self._health_event = health_event
@@ -184,6 +189,7 @@ class LMCacheMPSchedulerAdapter:
         tp_size: int = 1,
         mq_timeout: float = DEFAULT_MQ_TIMEOUT,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+        heartbeat_init_wait: float = DEFAULT_HEARTBEAT_INIT_WAIT,
     ):
         """
         Args:
@@ -197,6 +203,7 @@ class LMCacheMPSchedulerAdapter:
                 multi-reader locking (default 1).
             mq_timeout: Timeout in seconds for message queue requests.
             heartbeat_interval: Interval in seconds between heartbeat pings.
+            heartbeat_init_wait: Seconds to wait before first heartbeat ping.
         """
         self.mq_client = MessageQueueClient(server_url, context)
         self._mq_timeout = mq_timeout
@@ -235,6 +242,7 @@ class LMCacheMPSchedulerAdapter:
             mq_client=self.mq_client,
             health_event=self._health_event,
             interval=heartbeat_interval,
+            init_wait=heartbeat_init_wait,
         )
         self._heartbeat.start()
 
@@ -468,6 +476,7 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
         tp_size: int = 1,
         mq_timeout: float = DEFAULT_MQ_TIMEOUT,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+        heartbeat_init_wait: float = DEFAULT_HEARTBEAT_INIT_WAIT,
     ):
         super().__init__(
             server_url=server_url,
@@ -479,6 +488,7 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
             tp_size=tp_size,
             mq_timeout=mq_timeout,
             heartbeat_interval=heartbeat_interval,
+            heartbeat_init_wait=heartbeat_init_wait,
         )
         # Override base-class async state with sync state
         self._lookup_hit_counts: dict[str, int] = {}
@@ -564,6 +574,8 @@ class LMCacheMPPollingSchedulerAdapter(LMCacheMPSchedulerAdapter):
         tp_size: int = 1,
         poll_interval: float = 0.005,
         lookup_timeout: float = 5.0,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+        heartbeat_init_wait: float = DEFAULT_HEARTBEAT_INIT_WAIT,
     ):
         """
         Args:
@@ -580,6 +592,8 @@ class LMCacheMPPollingSchedulerAdapter(LMCacheMPSchedulerAdapter):
                 job to complete before giving up (default 5s). When the
                 timeout is exceeded, 0 is returned so the request proceeds
                 with normal inference without any KV cache hit.
+            heartbeat_interval: Interval in seconds between heartbeat pings.
+            heartbeat_init_wait: Seconds to wait before first heartbeat ping.
         """
         super().__init__(
             server_url=server_url,
@@ -589,6 +603,8 @@ class LMCacheMPPollingSchedulerAdapter(LMCacheMPSchedulerAdapter):
             kv_rank=kv_rank,
             vllm_block_size=vllm_block_size,
             tp_size=tp_size,
+            heartbeat_interval=heartbeat_interval,
+            heartbeat_init_wait=heartbeat_init_wait,
         )
         self._poll_interval = poll_interval
         self._lookup_timeout = lookup_timeout
@@ -653,6 +669,7 @@ class LMCacheMPWorkerAdapter:
         vllm_block_size: int,
         mq_timeout: float = DEFAULT_MQ_TIMEOUT,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+        heartbeat_init_wait: float = DEFAULT_HEARTBEAT_INIT_WAIT,
     ):
         self.mq_client = MessageQueueClient(server_url, context)
         self._mq_timeout = mq_timeout
@@ -706,6 +723,7 @@ class LMCacheMPWorkerAdapter:
             mq_client=self.mq_client,
             health_event=self._health_event,
             interval=heartbeat_interval,
+            init_wait=heartbeat_init_wait,
         )
         self._heartbeat.start()
 

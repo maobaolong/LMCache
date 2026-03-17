@@ -29,6 +29,8 @@ from lmcache.utils import init_logger as lmcache_init_logger
 try:
     # First Party
     from lmcache.integration.vllm.vllm_multi_process_adapter import (
+        DEFAULT_HEARTBEAT_INIT_WAIT,
+        DEFAULT_HEARTBEAT_INTERVAL,
         LMCacheMPPollingSchedulerAdapter,
         LMCacheMPSchedulerAdapter,
         LMCacheMPSyncSchedulerAdapter,
@@ -118,6 +120,13 @@ def create_scheduler_adapter(
         vllm_config.parallel_config.rank,
         vllm_config,
     )
+    heartbeat_interval = vllm_config.kv_transfer_config.get_from_extra_config(
+        "lmcache.mp.heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL
+    )
+    heartbeat_init_wait = vllm_config.kv_transfer_config.get_from_extra_config(
+        "lmcache.mp.heartbeat_init_wait", DEFAULT_HEARTBEAT_INIT_WAIT
+    )
+
     tp_size = vllm_config.parallel_config.tensor_parallel_size
 
     # Pass tp_size only when the adapter accepts it so that
@@ -133,6 +142,8 @@ def create_scheduler_adapter(
         world_size,
         kv_rank,
         vllm_config.cache_config.block_size,
+        heartbeat_interval=heartbeat_interval,
+        heartbeat_init_wait=heartbeat_init_wait,
         **kwargs,
     )
 
@@ -149,6 +160,13 @@ def create_polling_scheduler_adapter(
         vllm_config.parallel_config.rank,
         vllm_config,
     )
+    heartbeat_interval = vllm_config.kv_transfer_config.get_from_extra_config(
+        "lmcache.mp.heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL
+    )
+    heartbeat_init_wait = vllm_config.kv_transfer_config.get_from_extra_config(
+        "lmcache.mp.heartbeat_init_wait", DEFAULT_HEARTBEAT_INIT_WAIT
+    )
+
     tp_size = vllm_config.parallel_config.tensor_parallel_size
 
     kwargs: dict[str, Any] = {}
@@ -162,6 +180,8 @@ def create_polling_scheduler_adapter(
         world_size,
         kv_rank,
         vllm_config.cache_config.block_size,
+        heartbeat_interval=heartbeat_interval,
+        heartbeat_init_wait=heartbeat_init_wait,
         **kwargs,
     )
 
@@ -177,6 +197,13 @@ def create_sync_scheduler_adapter(
         vllm_config.parallel_config.rank,
         vllm_config,
     )
+    heartbeat_interval = vllm_config.kv_transfer_config.get_from_extra_config(
+        "lmcache.mp.heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL
+    )
+    heartbeat_init_wait = vllm_config.kv_transfer_config.get_from_extra_config(
+        "lmcache.mp.heartbeat_init_wait", DEFAULT_HEARTBEAT_INIT_WAIT
+    )
+
     tp_size = vllm_config.parallel_config.tensor_parallel_size
 
     kwargs: dict[str, Any] = {}
@@ -190,6 +217,8 @@ def create_sync_scheduler_adapter(
         world_size,
         kv_rank,
         vllm_config.cache_config.block_size,
+        heartbeat_interval=heartbeat_interval,
+        heartbeat_init_wait=heartbeat_init_wait,
         **kwargs,
     )
 
@@ -202,6 +231,12 @@ def create_worker_adapter(
         vllm_config.parallel_config.rank,
         vllm_config,
     )
+    heartbeat_interval = vllm_config.kv_transfer_config.get_from_extra_config(
+        "lmcache.mp.heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL
+    )
+    heartbeat_init_wait = vllm_config.kv_transfer_config.get_from_extra_config(
+        "lmcache.mp.heartbeat_init_wait", DEFAULT_HEARTBEAT_INIT_WAIT
+    )
     return LMCacheMPWorkerAdapter(
         server_url,
         zmq_context,
@@ -209,6 +244,8 @@ def create_worker_adapter(
         world_size,
         kv_rank,
         vllm_config.cache_config.block_size,
+        heartbeat_interval=heartbeat_interval,
+        heartbeat_init_wait=heartbeat_init_wait,
     )
 
 

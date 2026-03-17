@@ -272,6 +272,9 @@ class PeriodicThread(ABC):
         """Main thread loop."""
         # Initial wait
         if self._init_wait > 0:
+            logger.info(
+                "PeriodicThread %s init waiting for %.1fs", self._name, self._init_wait
+            )
             if self._stop_event.wait(timeout=self._init_wait):
                 logger.info("PeriodicThread %s stopped during init_wait", self._name)
                 return
