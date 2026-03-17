@@ -422,11 +422,7 @@ class MPCacheEngine:
         # L2-to-L1 prefetch now (blocking) before the L1-to-GPU copy.
         with self._pending_lookups_lock:
             pending = self._pending_lookups.pop(key.request_id, None)
-        if (
-            pending is not None
-            and pending.l2_lookup_results
-            and pending.remaining_keys
-        ):
+        if pending is not None and pending.l2_lookup_results and pending.remaining_keys:
             l2_loaded = self.storage_manager.execute_prefetch_load(
                 pending.remaining_keys,
                 pending.layout_desc,
@@ -727,7 +723,9 @@ class MPCacheEngine:
 
         hit_count, remaining_keys, l2_lookup_results = (
             self.storage_manager.synchronous_lookup_and_lock(
-                obj_keys, layout_desc, extra_count=extra_count,
+                obj_keys,
+                layout_desc,
+                extra_count=extra_count,
             )
         )
 
@@ -782,7 +780,8 @@ class MPCacheEngine:
             pending = self._pending_lookups.pop(key.request_id, None)
         if pending is not None and pending.l2_lookup_results:
             self.storage_manager.unlock_l2_lookups(
-                pending.remaining_keys, pending.l2_lookup_results,
+                pending.remaining_keys,
+                pending.l2_lookup_results,
             )
 
         # Release L1 read locks

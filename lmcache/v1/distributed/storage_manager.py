@@ -11,6 +11,7 @@ import time
 
 # First Party
 from lmcache.logging import init_logger
+from lmcache.native_storage_ops import Bitmap
 from lmcache.v1.distributed.api import (
     MemoryLayoutDesc,
     ObjectKey,
@@ -33,7 +34,6 @@ from lmcache.v1.distributed.storage_controllers.store_policy import (
     AdapterDescriptor,
     create_store_policy,
 )
-from lmcache.native_storage_ops import Bitmap
 from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.mp_observability.logger.storage_manager_stats_logger import (
     StorageManagerStatsLogger,
@@ -481,7 +481,10 @@ class StorageManager:
             Number of prefix hits loaded into L1 (with read locks held).
         """
         return self._prefetch_controller.execute_load_phase(
-            keys, layout_desc, lookup_results, extra_count=extra_count,
+            keys,
+            layout_desc,
+            lookup_results,
+            extra_count=extra_count,
         )
 
     def unlock_l2_lookups(

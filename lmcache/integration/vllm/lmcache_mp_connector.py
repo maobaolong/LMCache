@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import enum
-import inspect
+# Standard
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
+import enum
+import inspect
 
-import torch
-import zmq
-from lmcache.integration.vllm.utils import mla_enabled
-from lmcache.utils import init_logger as lmcache_init_logger
-
+# Third Party
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
@@ -22,8 +19,15 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import RequestStatus
 from vllm.v1.utils import ConstantList
+import torch
+import zmq
+
+# First Party
+from lmcache.integration.vllm.utils import mla_enabled
+from lmcache.utils import init_logger as lmcache_init_logger
 
 try:
+    # First Party
     from lmcache.integration.vllm.vllm_multi_process_adapter import (
         LMCacheMPPollingSchedulerAdapter,
         LMCacheMPSchedulerAdapter,
@@ -32,7 +36,8 @@ try:
         LoadStoreOp,
     )
 except ImportError:
-    from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_integration import (
+    # Third Party
+    from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_integration import (  # type: ignore[no-redef]
         LMCacheMPPollingSchedulerAdapter,
         LMCacheMPSchedulerAdapter,
         LMCacheMPSyncSchedulerAdapter,
@@ -41,6 +46,7 @@ except ImportError:
     )
 
 if TYPE_CHECKING:
+    # Third Party
     from vllm.distributed.kv_events import KVCacheEvent
     from vllm.distributed.kv_transfer.kv_connector.v1.metrics import (
         KVConnectorPromMetrics,
@@ -341,7 +347,7 @@ class LMCacheMPRequestMetadata:
         # Store the blocks that has block hashes
         # NOTE: the invariant here is that `num_stored_blocks` should
         # always be a multiple of `blocks_in_chunk`
-        # TODO: This should be checked everytime we update the num_stored_blocks
+        # TODO: This should be checked every time we update the num_stored_blocks
         min_available_blocks = min(
             len(tracker.block_hashes),
             len(tracker.allocated_block_ids),
@@ -481,8 +487,10 @@ class LMCacheMPConnector(KVConnectorBase_V1):
         server_port = vllm_config.kv_transfer_config.get_from_extra_config(
             "lmcache.mp.port", 5555
         )
-        self.use_sync_lookup: bool = vllm_config.kv_transfer_config.get_from_extra_config(
-            "lmcache.mp.sync_lookup", False
+        self.use_sync_lookup: bool = (
+            vllm_config.kv_transfer_config.get_from_extra_config(
+                "lmcache.mp.sync_lookup", False
+            )
         )
         self.use_two_stage: bool = vllm_config.kv_transfer_config.get_from_extra_config(
             "lmcache.mp.use_two_stage", False
@@ -491,6 +499,11 @@ class LMCacheMPConnector(KVConnectorBase_V1):
         server_url = f"{server_host}:{server_port}"
         zmq_context = zmq.Context.instance()
         if self.role == KVConnectorRole.SCHEDULER:
+            self.scheduler_adapter: (
+                LMCacheMPSyncSchedulerAdapter
+                | LMCacheMPPollingSchedulerAdapter
+                | LMCacheMPSchedulerAdapter
+            )
             if self.use_two_stage:
                 self.scheduler_adapter = create_sync_scheduler_adapter(
                     server_url, zmq_context, vllm_config

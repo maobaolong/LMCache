@@ -520,8 +520,7 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
             hit_chunks = future.result(timeout=self._mq_timeout)
         except TimeoutError:
             logger.warning(
-                "SYNC_LOOKUP request timed out after %ss. "
-                "Marking server as unhealthy.",
+                "SYNC_LOOKUP request timed out after %ss. Marking server as unhealthy.",
                 self._mq_timeout,
             )
             self._health_event.clear()

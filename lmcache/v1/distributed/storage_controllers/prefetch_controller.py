@@ -401,7 +401,9 @@ class PrefetchController(StorageControllerInterface):
 
         # -- Step 1: compute load plan ----------------------------------------
         load_plan = self._policy.select_load_plan(
-            keys, lookup_results, self._adapter_descriptors,
+            keys,
+            lookup_results,
+            self._adapter_descriptors,
         )
         trimmed_plan = trim_load_plan_to_prefix(load_plan, num_keys)
 
@@ -460,9 +462,7 @@ class PrefetchController(StorageControllerInterface):
         pending_loads: dict[int, L2TaskId] = {}
         for adapter_idx, bitmap in trimmed_plan.items():
             per_adapter_keys = bitmap.gather(keys)
-            per_adapter_objs = [
-                write_reserved_objs[k] for k in per_adapter_keys
-            ]
+            per_adapter_objs = [write_reserved_objs[k] for k in per_adapter_keys]
             task_id = self._l2_adapters[adapter_idx].submit_load_task(
                 per_adapter_keys, per_adapter_objs
             )
