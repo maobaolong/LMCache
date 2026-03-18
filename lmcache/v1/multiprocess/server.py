@@ -971,6 +971,13 @@ def run_cache_server(
     add_handler_helper(server, RequestType.END_SESSION, engine.end_session)
     add_handler_helper(server, RequestType.NOOP, engine.debug)
 
+    # Give lookup operations a dedicated thread pool so they are never
+    # starved by long-running STORE / RETRIEVE I/O on the shared pool.
+    server.add_dedicated_thread_pool(
+        request_types=[RequestType.SYNC_LOOKUP],
+        max_workers=8,
+    )
+
     logger.info(
         "LMCache ZMQ cache server is running on tcp://%s:%d",
         mp_config.host,
