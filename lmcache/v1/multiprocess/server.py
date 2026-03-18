@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import argparse
 import threading
 import time
@@ -161,6 +161,16 @@ class _PendingLookupState:
 
     world_size: int
     """World size for normalizing hit counts."""
+
+    # -- Coordination fields for multi-worker RETRIEVE ----------------------
+    load_done: threading.Event = field(default_factory=threading.Event)
+    """Signaled after the first RETRIEVE worker finishes L2-to-L1 load."""
+
+    load_claimed: bool = False
+    """True once one RETRIEVE worker has claimed the L2 load work."""
+
+    workers_remaining: int = 0
+    """Countdown of RETRIEVE workers; last one removes the entry."""
 
 
 # Main class for the mp cache engine
@@ -424,22 +434,39 @@ class MPCacheEngine:
         )
         gpu_context = self.gpu_contexts[instance_id]
 
-        # If a prior SYNC_LOOKUP left pending L2 state, execute the
-        # L2-to-L1 prefetch now (blocking) before the L1-to-GPU copy.
+        # If a prior SYNC_LOOKUP left pending L2 state, coordinate the
+        # L2-to-L1 load across TP workers: the first arrival does the work,
+        # the rest wait for it to finish.
         with self._pending_lookups_lock:
-            pending = self._pending_lookups.pop(key.request_id, None)
+            pending = self._pending_lookups.get(key.request_id)
+            if pending is not None:
+                i_should_load = not pending.load_claimed
+                if i_should_load:
+                    pending.load_claimed = True
+
         if pending is not None and pending.l2_lookup_results and pending.remaining_keys:
-            l2_loaded = self.storage_manager.execute_prefetch_load(
-                pending.remaining_keys,
-                pending.layout_desc,
-                pending.l2_lookup_results,
-                extra_count=pending.extra_count,
-            )
-            logger.debug(
-                "RETRIEVE for %s: loaded %d L2 prefix hits into L1",
-                key.request_id,
-                l2_loaded,
-            )
+            if i_should_load:
+                l2_loaded = self.storage_manager.execute_prefetch_load(
+                    pending.remaining_keys,
+                    pending.layout_desc,
+                    pending.l2_lookup_results,
+                    extra_count=pending.extra_count,
+                )
+                logger.debug(
+                    "RETRIEVE for %s: loaded %d L2 prefix hits into L1",
+                    key.request_id,
+                    l2_loaded,
+                )
+                pending.load_done.set()
+            else:
+                pending.load_done.wait()
+
+        # Last worker removes the entry
+        if pending is not None:
+            with self._pending_lookups_lock:
+                pending.workers_remaining -= 1
+                if pending.workers_remaining == 0:
+                    self._pending_lookups.pop(key.request_id, None)
 
         if get_telemetry_controller().is_enabled():
             gpu_context.cupy_stream.launch_host_func(
@@ -758,6 +785,7 @@ class MPCacheEngine:
                 layout_desc=layout_desc,
                 extra_count=extra_count,
                 world_size=key.world_size,
+                workers_remaining=key.world_size,
             )
 
         found_count = hit_count // key.world_size
@@ -796,14 +824,33 @@ class MPCacheEngine:
             tp_size: Tensor-parallel size for MLA
                 multi-reader locking.
         """
-        # Release any pending L2 pins from SYNC_LOOKUP
+        # Release any pending L2 pins from SYNC_LOOKUP.
+        # Coordinate with other TP workers: only unlock if nobody has
+        # claimed the load yet (i.e. all workers are freeing, not retrieving).
+        # If a load is already in progress, just wait for it and let the
+        # retrieve path handle cleanup.
         with self._pending_lookups_lock:
-            pending = self._pending_lookups.pop(key.request_id, None)
+            pending = self._pending_lookups.get(key.request_id)
+            if pending is not None:
+                i_should_unlock = not pending.load_claimed
+                if i_should_unlock:
+                    pending.load_claimed = True
+
         if pending is not None and pending.l2_lookup_results:
-            self.storage_manager.unlock_l2_lookups(
-                pending.remaining_keys,
-                pending.l2_lookup_results,
-            )
+            if i_should_unlock:
+                self.storage_manager.unlock_l2_lookups(
+                    pending.remaining_keys,
+                    pending.l2_lookup_results,
+                )
+                pending.load_done.set()
+            else:
+                pending.load_done.wait()
+
+        if pending is not None:
+            with self._pending_lookups_lock:
+                pending.workers_remaining -= 1
+                if pending.workers_remaining == 0:
+                    self._pending_lookups.pop(key.request_id, None)
 
         # Release L1 read locks
         chunk_hashes = self.token_hasher.compute_chunk_hashes(
