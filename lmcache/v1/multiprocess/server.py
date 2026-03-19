@@ -297,7 +297,6 @@ class MPCacheEngine:
             torch.cuda.stream(gpu_context.stream),
         ):
             event = torch.cuda.Event(interprocess=True)
-            slot_mapping_tensor = gpu_context.get_slot_mapping_tensor(gpu_block_ids)
 
             # Wait for vLLM to finish
             vllm_event = torch.cuda.Event.from_ipc_handle(
@@ -320,19 +319,26 @@ class MPCacheEngine:
                 obj_keys, layout_desc, "new"
             )
 
-            for idx, obj_key in enumerate(obj_keys):
-                if obj_key in reserved_dict:
-                    memory_obj = reserved_dict[obj_key]
-                else:
-                    continue
+            # Hold transfer_lock for the entire batch so that
+            # get_slot_mapping_tensor (GIL + CUDA) and
+            # multi_layer_kv_transfer (release-GIL + CUDA)
+            # never run concurrently, preventing GIL <-> CUDA
+            # driver lock order inversion deadlock.
+            with gpu_context.transfer_lock:
+                slot_mapping_tensor = gpu_context.get_slot_mapping_tensor(gpu_block_ids)
 
-                start = idx * self.chunk_size
-                end = start + self.chunk_size
-                slot_mapping = slot_mapping_tensor[start:end]
+                for idx, obj_key in enumerate(obj_keys):
+                    if obj_key in reserved_dict:
+                        memory_obj = reserved_dict[obj_key]
+                    else:
+                        continue
 
-                # Copy from GPU to CPU
-                tmp_buffer = gpu_context.get_tmp_gpu_buffer(self.chunk_size)
-                with gpu_context.transfer_lock:
+                    start = idx * self.chunk_size
+                    end = start + self.chunk_size
+                    slot_mapping = slot_mapping_tensor[start:end]
+
+                    # Copy from GPU to CPU
+                    tmp_buffer = gpu_context.get_tmp_gpu_buffer(self.chunk_size)
                     lmc_ops.multi_layer_kv_transfer(
                         tmp_buffer,
                         gpu_context.kv_pointers,
@@ -468,40 +474,50 @@ class MPCacheEngine:
 
                 # Copy from CPU to GPU
                 tmp_gpu_buffer_ = gpu_context.get_tmp_gpu_buffer(self.chunk_size)
-                with gpu_context.transfer_lock:
-                    lmcache_memcpy_async_h2d(memory_obj, tmp_gpu_buffer_)
-                    lmc_ops.multi_layer_kv_transfer(
-                        tmp_gpu_buffer_,
-                        gpu_context.kv_pointers,
-                        slot_mapping,
-                        gpu_context.device,
-                        gpu_context.block_size * gpu_context.num_blocks,
-                        lmc_ops.TransferDirection.H2D,
-                        gpu_context.gpu_kv_format_,
-                        gpu_context.block_size,
-                        skip_in_chunk,
-                    )
+                lmcache_memcpy_async_h2d(memory_obj, tmp_gpu_buffer_)
+                lmc_ops.multi_layer_kv_transfer(
+                    tmp_gpu_buffer_,
+                    gpu_context.kv_pointers,
+                    slot_mapping,
+                    gpu_context.device,
+                    gpu_context.block_size * gpu_context.num_blocks,
+                    lmc_ops.TransferDirection.H2D,
+                    gpu_context.gpu_kv_format_,
+                    gpu_context.block_size,
+                    skip_in_chunk,
+                )
 
         with (
             torch.cuda.device(gpu_context.device),
             torch.cuda.stream(gpu_context.high_priority_stream),
         ):
-            slot_mapping_tensor = gpu_context.get_slot_mapping_tensor(gpu_block_ids)
-
             event = torch.cuda.Event(interprocess=True)
 
             prefetched_keys: list[ObjectKey] = []
             retrieve_succeeded = False
             try:
-                with self.storage_manager.read_prefetched_results(
-                    obj_keys
-                ) as memory_objs:
-                    if not memory_objs or len(memory_objs) != len(obj_keys):
-                        logger.error("Some keys not found during retrieve!")
-                        return event.ipc_handle(), False
+                # Hold transfer_lock for the entire batch
+                # so that get_slot_mapping_tensor (GIL +
+                # CUDA) and multi_layer_kv_transfer
+                # (release-GIL + CUDA) never run
+                # concurrently, preventing GIL <-> CUDA
+                # driver lock order inversion deadlock.
+                with gpu_context.transfer_lock:
+                    slot_mapping_tensor = gpu_context.get_slot_mapping_tensor(
+                        gpu_block_ids
+                    )
+                    with self.storage_manager.read_prefetched_results(
+                        obj_keys
+                    ) as memory_objs:
+                        if not memory_objs or len(memory_objs) != len(obj_keys):
+                            logger.error("Some keys not found during retrieve!")
+                            return (
+                                event.ipc_handle(),
+                                False,
+                            )
 
-                    prefetched_keys = obj_keys[: len(memory_objs)]
-                    _retrieve_loop(obj_keys, memory_objs)
+                        prefetched_keys = obj_keys[: len(memory_objs)]
+                        _retrieve_loop(obj_keys, memory_objs)
                 # Only set True when with-block exits normally
                 retrieve_succeeded = True
             except Exception as e:
