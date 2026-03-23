@@ -316,7 +316,7 @@ class LMCacheMPSchedulerAdapter:
         _t3 = time.monotonic()
 
         self._lookup_job_ids[request_id] = job_id
-        logger.critical(
+        logger.debug(
             "SUBMIT_LOOKUP req=%s: create_key=%.3f ms, "
             "send_request=%.3f ms, future.result=%.3f ms, "
             "total=%.3f ms",
@@ -375,7 +375,7 @@ class LMCacheMPSchedulerAdapter:
             return 0
         _t1 = time.monotonic()
 
-        logger.critical(
+        logger.debug(
             "CHECK_LOOKUP req=%s job=%d: query_prefetch=%.3f ms, result=%s",
             request_id,
             job_id,
@@ -547,7 +547,7 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
             request_id=request_id,
         ).no_worker_id_version()
 
-        logger.info(
+        logger.debug(
             "SYNC_LOOKUP: submitting for request_id=%s, aligned_end=%d tokens",
             request_id,
             aligned_end,
@@ -568,7 +568,7 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
             self._health_event.clear()
             return
 
-        logger.info(
+        logger.debug(
             "SYNC_LOOKUP: request_id=%s hit %d chunks (%d tokens)",
             request_id,
             hit_chunks,
@@ -584,13 +584,13 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
         The result is already available — no network call needed.
         """
         if request_id not in self._lookup_hit_counts:
-            logger.info(
+            logger.debug(
                 "SYNC_LOOKUP check: request_id=%s not found, returning 0",
                 request_id,
             )
             return 0
         hit_tokens = self._lookup_hit_counts[request_id] * self.chunk_size
-        logger.info(
+        logger.debug(
             "SYNC_LOOKUP check: request_id=%s returning %d tokens",
             request_id,
             hit_tokens,
