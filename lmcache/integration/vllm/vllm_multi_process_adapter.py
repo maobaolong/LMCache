@@ -286,6 +286,7 @@ class LMCacheMPSchedulerAdapter:
             # Skip if there is already a lookup request
             return
 
+        _t0 = time.monotonic()
         aligned_end = (len(token_ids) // self.chunk_size) * self.chunk_size
 
         key = self._create_key(
@@ -294,12 +295,15 @@ class LMCacheMPSchedulerAdapter:
             end=aligned_end,
             request_id=request_id,
         ).no_worker_id_version()
+        _t1 = time.monotonic()
 
         future = send_lmcache_request(
             self.mq_client,
             RequestType.LOOKUP,
             [key, self.tp_size],
         )
+        _t2 = time.monotonic()
+
         try:
             job_id = future.result(timeout=self._mq_timeout)
         except TimeoutError:
@@ -309,7 +313,19 @@ class LMCacheMPSchedulerAdapter:
             )
             self._health_event.clear()
             return
+        _t3 = time.monotonic()
+
         self._lookup_job_ids[request_id] = job_id
+        logger.debug(
+            "SUBMIT_LOOKUP req=%s: create_key=%.3f ms, "
+            "send_request=%.3f ms, future.result=%.3f ms, "
+            "total=%.3f ms",
+            request_id,
+            (_t1 - _t0) * 1000,
+            (_t2 - _t1) * 1000,
+            (_t3 - _t2) * 1000,
+            (_t3 - _t0) * 1000,
+        )
 
     @_lmcache_nvtx_annotate
     def check_lookup_result(self, request_id: str) -> int | None:
@@ -341,6 +357,7 @@ class LMCacheMPSchedulerAdapter:
         if job_id in self._finished_lookup_jobs:
             return self._finished_lookup_jobs[job_id] * self.chunk_size
 
+        _t0 = time.monotonic()
         try:
             result = send_lmcache_request(
                 self.mq_client,
@@ -356,6 +373,15 @@ class LMCacheMPSchedulerAdapter:
             self._health_event.clear()
             self._lookup_job_ids.pop(request_id, None)
             return 0
+        _t1 = time.monotonic()
+
+        logger.debug(
+            "CHECK_LOOKUP req=%s job=%d: query_prefetch=%.3f ms, result=%s",
+            request_id,
+            job_id,
+            (_t1 - _t0) * 1000,
+            result,
+        )
 
         if result is None:
             return None
@@ -521,6 +547,12 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
             request_id=request_id,
         ).no_worker_id_version()
 
+        logger.debug(
+            "SYNC_LOOKUP: submitting for request_id=%s, aligned_end=%d tokens",
+            request_id,
+            aligned_end,
+        )
+
         future = send_lmcache_request(
             self.mq_client,
             RequestType.SYNC_LOOKUP,
@@ -535,6 +567,13 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
             )
             self._health_event.clear()
             return
+
+        logger.debug(
+            "SYNC_LOOKUP: request_id=%s hit %d chunks (%d tokens)",
+            request_id,
+            hit_chunks,
+            hit_chunks * self.chunk_size,
+        )
         self._lookup_hit_counts[request_id] = hit_chunks
 
     @_lmcache_nvtx_annotate
@@ -545,8 +584,18 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
         The result is already available — no network call needed.
         """
         if request_id not in self._lookup_hit_counts:
+            logger.debug(
+                "SYNC_LOOKUP check: request_id=%s not found, returning 0",
+                request_id,
+            )
             return 0
-        return self._lookup_hit_counts[request_id] * self.chunk_size
+        hit_tokens = self._lookup_hit_counts[request_id] * self.chunk_size
+        logger.debug(
+            "SYNC_LOOKUP check: request_id=%s returning %d tokens",
+            request_id,
+            hit_tokens,
+        )
+        return hit_tokens
 
     def cleanup_lookup_result(self, request_id: str) -> None:
         """Clean up sync lookup state for a finished request."""

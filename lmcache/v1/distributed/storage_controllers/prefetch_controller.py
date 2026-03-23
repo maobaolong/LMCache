@@ -36,6 +36,11 @@ from lmcache.v1.distributed.storage_controllers.store_policy import (
     AdapterDescriptor,
 )
 from lmcache.v1.memory_management import MemoryObj
+from lmcache.v1.mp_observability.telemetry.controller import (
+    log_telemetry,
+    make_end_event,
+    make_start_event,
+)
 
 logger = init_logger(__name__)
 
@@ -653,6 +658,9 @@ class PrefetchController(StorageControllerInterface):
         self._in_flight_requests[request_id] = request
         self._status_in_flight_count += 1
         self._status_lookup_phase_count += 1
+        log_telemetry(
+            make_start_event("l2_lookup", str(request_id), num_keys=len(keys))
+        )
 
     def _process_lookup_completions(self, adapter_index: int) -> None:
         """Check all LOOKUP-phase requests for completed lookups from
@@ -678,6 +686,13 @@ class PrefetchController(StorageControllerInterface):
                     ready_to_transition.append(request)
 
         for request in ready_to_transition:
+            log_telemetry(
+                make_end_event(
+                    "l2_lookup",
+                    str(request.request_id),
+                    num_adapters=len(request.lookup_results),
+                )
+            )
             self._transition_to_load_phase(request)
 
     # =========================================================================
@@ -774,6 +789,13 @@ class PrefetchController(StorageControllerInterface):
             len(trimmed_plan),
             len(reserved_key_set),
         )
+        log_telemetry(
+            make_start_event(
+                "l2_prefetch",
+                str(request.request_id),
+                num_keys=len(reserved_key_set),
+            )
+        )
 
     def _process_load_completions(self, adapter_index: int) -> None:
         """Check all PLAN_AND_LOAD-phase requests for completed loads."""
@@ -853,6 +875,13 @@ class PrefetchController(StorageControllerInterface):
         if non_prefix_loaded:
             l1_mgr.finish_read(non_prefix_loaded, extra_count=request.extra_count)
 
+        log_telemetry(
+            make_end_event(
+                "l2_prefetch",
+                str(request.request_id),
+                prefix_hits=prefix_hits,
+            )
+        )
         self._complete_request(request.request_id, prefix_hits)
 
     # =========================================================================
