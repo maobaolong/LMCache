@@ -658,7 +658,9 @@ class PrefetchController(StorageControllerInterface):
         self._in_flight_requests[request_id] = request
         self._status_in_flight_count += 1
         self._status_lookup_phase_count += 1
-        log_telemetry(make_start_event("l2_lookup", str(request_id), num_keys=len(keys)))
+        log_telemetry(
+            make_start_event("l2_lookup", str(request_id), num_keys=len(keys))
+        )
 
     def _process_lookup_completions(self, adapter_index: int) -> None:
         """Check all LOOKUP-phase requests for completed lookups from

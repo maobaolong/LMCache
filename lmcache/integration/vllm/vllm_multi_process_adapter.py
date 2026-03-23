@@ -548,8 +548,7 @@ class LMCacheMPSyncSchedulerAdapter(LMCacheMPSchedulerAdapter):
         ).no_worker_id_version()
 
         logger.info(
-            "SYNC_LOOKUP: submitting for request_id=%s, "
-            "aligned_end=%d tokens",
+            "SYNC_LOOKUP: submitting for request_id=%s, aligned_end=%d tokens",
             request_id,
             aligned_end,
         )
