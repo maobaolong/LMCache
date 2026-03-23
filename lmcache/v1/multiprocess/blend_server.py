@@ -213,7 +213,11 @@ class BlendEngine(MPCacheEngine):
             )
 
             obj_keys = ipc_key_to_object_keys(temp_ipc_key, chunk_hashes)
-            handle = self.storage_manager.submit_prefetch_task(obj_keys, layout_desc)
+            handle = self.storage_manager.submit_prefetch_task(
+                obj_keys,
+                layout_desc,
+                external_request_id=key.request_id,
+            )
 
             prefetch_handles.append(handle)
             expected_found_count.append(len(chunk_hashes))
