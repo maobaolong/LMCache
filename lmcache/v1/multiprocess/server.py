@@ -829,6 +829,9 @@ class MPCacheEngine:
         # claimed the load yet (i.e. all workers are freeing, not retrieving).
         # If a load is already in progress, just wait for it and let the
         # retrieve path handle cleanup.
+
+        # FIXME(rigginschen): Need to double check the compatibility
+        # with Non-MLA models, i.e. GQA models.
         with self._pending_lookups_lock:
             pending = self._pending_lookups.get(key.request_id)
             if pending is not None:
