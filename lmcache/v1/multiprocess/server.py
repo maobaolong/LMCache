@@ -523,27 +523,27 @@ class MPCacheEngine:
             prefetched_keys: list[ObjectKey] = []
             retrieve_succeeded = False
             try:
-                # Hold transfer_lock for the entire batch
-                # so that get_slot_mapping_tensor (GIL +
-                # CUDA) and multi_layer_kv_transfer
-                # (release-GIL + CUDA) never run
-                # concurrently, preventing GIL <-> CUDA
-                # driver lock order inversion deadlock.
-                with gpu_context.transfer_lock:
-                    slot_mapping_tensor = gpu_context.get_slot_mapping_tensor(
-                        gpu_block_ids
-                    )
-                    with self.storage_manager.read_prefetched_results(
-                        obj_keys
-                    ) as memory_objs:
-                        if not memory_objs or len(memory_objs) != len(obj_keys):
-                            logger.error("Some keys not found during retrieve!")
-                            return (
-                                event.ipc_handle(),
-                                False,
-                            )
+                with self.storage_manager.read_prefetched_results(
+                    obj_keys
+                ) as memory_objs:
+                    if not memory_objs or len(memory_objs) != len(obj_keys):
+                        logger.error("Some keys not found during retrieve!")
+                        return (
+                            event.ipc_handle(),
+                            False,
+                        )
 
-                        prefetched_keys = obj_keys[: len(memory_objs)]
+                    prefetched_keys = obj_keys[: len(memory_objs)]
+                    # Hold transfer_lock only for GPU ops
+                    # so that get_slot_mapping_tensor (GIL
+                    # + CUDA) and multi_layer_kv_transfer
+                    # (release-GIL + CUDA) never run
+                    # concurrently, preventing GIL <->
+                    # CUDA driver lock order inversion.
+                    with gpu_context.transfer_lock:
+                        slot_mapping_tensor = gpu_context.get_slot_mapping_tensor(
+                            gpu_block_ids
+                        )
                         _retrieve_loop(obj_keys, memory_objs)
                 # Only set True when with-block exits normally
                 retrieve_succeeded = True
