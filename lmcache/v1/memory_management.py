@@ -634,7 +634,15 @@ class TensorMemoryObj(MemoryObj):
         if not self.valid:
             logger.warning("Trying to access an invalidated MemoryObj")
             return None
-        assert self.meta.dtype is not None
+        # 多 group 场景：复用 get_tensor(0) 返回第 0 个 group 的视图
+        if self.meta.shapes is not None and self.meta.dtypes is not None:
+            return self.get_tensor(0)
+        # 单 group 场景（旧接口兼容）
+        if self.meta.dtype is None:
+            raise ValueError(
+                "MemoryObjMetadata.dtype is None and no per-group shapes/dtypes "
+                "are available. Cannot construct tensor view."
+            )
         # TODO(Jiayi): consider caching the `get_size()`
         return (
             self.raw_data[: self.get_size()].view(self.meta.dtype).view(self.meta.shape)
@@ -688,8 +696,16 @@ class TensorMemoryObj(MemoryObj):
         if not self.valid:
             logger.warning("Trying to access an invalidated MemoryObj")
             return None
-        assert self.meta.shapes is not None
-        assert self.meta.dtypes is not None
+        if self.meta.shapes is None:
+            raise ValueError(
+                "MemoryObjMetadata.shapes is None. "
+                "Cannot use get_tensor() without per-group shapes."
+            )
+        if self.meta.dtypes is None:
+            raise ValueError(
+                "MemoryObjMetadata.dtypes is None. "
+                "Cannot use get_tensor() without per-group dtypes."
+            )
         begin = self.group_prefix_sum[index]
         end = self.group_prefix_sum[index + 1]
         return (

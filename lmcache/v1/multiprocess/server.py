@@ -25,10 +25,6 @@ from lmcache.v1.distributed.config import (
     parse_args_to_config,
 )
 from lmcache.v1.distributed.storage_manager import PrefetchHandle, StorageManager
-from lmcache.v1.gpu_connector.gpu_ops import (
-    lmcache_memcpy_async_d2h,
-    lmcache_memcpy_async_h2d,
-)
 from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.mp_observability.config import (
     PrometheusConfig,
@@ -124,16 +120,27 @@ def compute_extra_count(
 def get_layout_desc(gpu_context: GPUCacheContext, num_tokens: int) -> MemoryLayoutDesc:
     """Get the memory layout description for a given GPU context and number of tokens.
 
+    Each KV layer group (which may have a different shape and dtype) contributes
+    one entry to the shapes/dtypes lists.
+
     Args:
         gpu_context: The GPU cache context containing the KV cache information.
         num_tokens: The number of tokens to determine the layout for.
 
     Returns:
-        MemoryLayoutDesc: The memory layout description containing shapes and dtypes.
+        MemoryLayoutDesc: The memory layout description containing per-group
+            shapes and dtypes.
     """
-    shape = gpu_context.get_kv_buffer_shape(num_tokens)
-    dtype = gpu_context.dtype
-    return MemoryLayoutDesc(shapes=[shape], dtypes=[dtype])
+    num_groups = gpu_context.kv_layer_groups_manager.num_groups
+    shapes = [
+        gpu_context.get_kv_buffer_shape(num_tokens, group_idx)
+        for group_idx in range(num_groups)
+    ]
+    dtypes = [
+        gpu_context.get_group_dtype(group_idx)
+        for group_idx in range(num_groups)
+    ]
+    return MemoryLayoutDesc(shapes=shapes, dtypes=dtypes)
 
 
 @dataclass
@@ -330,22 +337,38 @@ class MPCacheEngine:
                 end = start + self.chunk_size
                 slot_mapping = slot_mapping_tensor[start:end]
 
-                # Copy from GPU to CPU
-                tmp_buffer = gpu_context.get_tmp_gpu_buffer(self.chunk_size)
-                with self.lock:
-                    lmc_ops.multi_layer_kv_transfer(
-                        tmp_buffer,
-                        gpu_context.kv_pointers,
-                        slot_mapping,
-                        gpu_context.device,
-                        gpu_context.block_size * gpu_context.num_blocks,
-                        lmc_ops.TransferDirection.D2H,
-                        gpu_context.gpu_kv_format_,
-                        gpu_context.block_size,
+                # Copy from GPU to CPU, per group
+                if memory_obj is None:
+                    raise ValueError(
+                        f"memory_obj is None for obj_key {obj_key}. "
+                        "Cannot perform D2H transfer."
                     )
-
-                    assert memory_obj.tensor is not None
-                    lmcache_memcpy_async_d2h(tmp_buffer, memory_obj)
+                num_groups = gpu_context.kv_layer_groups_manager.num_groups
+                with self.lock:
+                    for group_idx in range(num_groups):
+                        tmp_buffer = gpu_context.get_tmp_gpu_buffer(
+                            self.chunk_size, group_idx
+                        )
+                        group_kv_pointers = gpu_context.get_group_kv_pointers(
+                            group_idx
+                        )
+                        lmc_ops.multi_layer_kv_transfer(
+                            tmp_buffer,
+                            group_kv_pointers,
+                            slot_mapping,
+                            gpu_context.device,
+                            gpu_context.block_size * gpu_context.num_blocks,
+                            lmc_ops.TransferDirection.D2H,
+                            gpu_context.gpu_kv_format_,
+                            gpu_context.block_size,
+                        )
+                        group_tensor = memory_obj.get_tensor(group_idx)
+                        if group_tensor is None:
+                            raise ValueError(
+                                f"get_tensor({group_idx}) returned None for "
+                                f"obj_key {obj_key}."
+                            )
+                        group_tensor.copy_(tmp_buffer, non_blocking=True)
 
             event.record()
 
@@ -450,6 +473,7 @@ class MPCacheEngine:
             )
 
         def _retrieve_loop(keys: list[ObjectKey], memory_objs: list[MemoryObj]) -> None:
+            num_groups = gpu_context.kv_layer_groups_manager.num_groups
             for idx, (key, memory_obj) in enumerate(
                 zip(keys, memory_objs, strict=False)
             ):
@@ -470,21 +494,33 @@ class MPCacheEngine:
                 )
                 slot_mapping = slot_mapping_tensor[chunk_start:chunk_end]
 
-                # Copy from CPU to GPU
-                tmp_gpu_buffer_ = gpu_context.get_tmp_gpu_buffer(self.chunk_size)
+                # Copy from CPU to GPU, per group
                 with self.lock:
-                    lmcache_memcpy_async_h2d(memory_obj, tmp_gpu_buffer_)
-                    lmc_ops.multi_layer_kv_transfer(
-                        tmp_gpu_buffer_,
-                        gpu_context.kv_pointers,
-                        slot_mapping,
-                        gpu_context.device,
-                        gpu_context.block_size * gpu_context.num_blocks,
-                        lmc_ops.TransferDirection.H2D,
-                        gpu_context.gpu_kv_format_,
-                        gpu_context.block_size,
-                        skip_in_chunk,
-                    )
+                    for group_idx in range(num_groups):
+                        tmp_gpu_buffer_ = gpu_context.get_tmp_gpu_buffer(
+                            self.chunk_size, group_idx
+                        )
+                        group_kv_pointers = gpu_context.get_group_kv_pointers(
+                            group_idx
+                        )
+                        group_tensor = memory_obj.get_tensor(group_idx)
+                        if group_tensor is None:
+                            raise ValueError(
+                                f"get_tensor({group_idx}) returned None for "
+                                f"key {key}."
+                            )
+                        tmp_gpu_buffer_.copy_(group_tensor, non_blocking=True)
+                        lmc_ops.multi_layer_kv_transfer(
+                            tmp_gpu_buffer_,
+                            group_kv_pointers,
+                            slot_mapping,
+                            gpu_context.device,
+                            gpu_context.block_size * gpu_context.num_blocks,
+                            lmc_ops.TransferDirection.H2D,
+                            gpu_context.gpu_kv_format_,
+                            gpu_context.block_size,
+                            skip_in_chunk,
+                        )
 
         with (
             torch.cuda.device(gpu_context.device),

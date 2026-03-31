@@ -34,13 +34,15 @@ from lmcache.v1.memory_management import MemoryObj, TensorMemoryObj
 
 
 def clone_tensor_memory_obj(obj: MemoryObj) -> TensorMemoryObj:
-    assert isinstance(obj, TensorMemoryObj), (
-        "Only TensorMemoryObj is supported in this mock adapter"
-    )
+    if not isinstance(obj, TensorMemoryObj):
+        raise ValueError(
+            "Only TensorMemoryObj is supported in this mock adapter"
+        )
     raw_tensor = obj.raw_tensor
-    assert raw_tensor is not None, (
-        "The tensor data of the object cannot be None for cloning"
-    )
+    if raw_tensor is None:
+        raise ValueError(
+            "The tensor data of the object cannot be None for cloning"
+        )
 
     new_obj = TensorMemoryObj(
         raw_data=raw_tensor.detach().clone(),
@@ -463,11 +465,13 @@ class MockL2Adapter(L2AdapterInterface):
                 continue
             # load data into the provided memory object
             obj = self._memory_objects[key]
-            src_tensor = obj.tensor
-            dst_tensor = objects[i].tensor
-            assert src_tensor is not None
-            assert dst_tensor is not None
-            dst_tensor.copy_(src_tensor)
+            src_raw = obj.raw_data
+            dst_raw = objects[i].raw_data
+            if src_raw is None or dst_raw is None:
+                raise ValueError(
+                    f"raw_data of memory object for key {key} cannot be None"
+                )
+            dst_raw.copy_(src_raw)
             bitmap.set(i)
             total_bytes += obj.get_size()
 

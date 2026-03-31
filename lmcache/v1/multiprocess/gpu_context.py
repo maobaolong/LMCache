@@ -20,12 +20,11 @@ from lmcache.utils import EngineType, _lmcache_nvtx_annotate
 from lmcache.v1.gpu_connector.utils import (
     discover_gpu_kv_format,
     get_block_size,
-    get_dtype,
-    get_hidden_dim_size,
     get_num_blocks,
     get_num_layers,
     is_mla,
 )
+from lmcache.v1.kv_layer_groups import KVLayerGroupsManager
 from lmcache.v1.multiprocess.custom_types import (
     KVCache,
 )
@@ -66,9 +65,17 @@ class GPUCacheContext:
         self.num_layers_ = get_num_layers(self.kv_caches_, self.gpu_kv_format_)
         self.num_blocks_ = get_num_blocks(self.kv_caches_, self.gpu_kv_format_)
         self.block_size_ = get_block_size(self.kv_caches_, self.gpu_kv_format_)
-        self.hidden_dim_size_ = get_hidden_dim_size(
-            self.kv_caches_, self.gpu_kv_format_
+        # Build per-layer KV groups (grouped by shape and dtype)
+        self.kv_layer_groups_manager_ = KVLayerGroupsManager()
+        self.kv_layer_groups_manager_.build_kv_layer_groups_from_list(
+            self.kv_caches_
         )
+
+        # hidden_dim_size per group (list indexed by group index)
+        self.hidden_dim_sizes_ = [
+            group.hidden_dim_size
+            for group in self.kv_layer_groups_manager_.kv_layer_groups
+        ]
 
         # Pre-computed slot mapping
         # shape: [num_blocks, block_size]
@@ -79,14 +86,20 @@ class GPUCacheContext:
             0, self.block_size_, dtype=torch.long, device=self.device_
         ).unsqueeze(0)
         self.slot_mapping_tensor_ = (offsets + block_ids * self.block_size_).reshape(
-            (self.num_blocks, self.block_size_)
+            (self.num_blocks_, self.block_size_)
         )
 
-        # Temporary GPU buffer for transfers
-        tmp_buffer_shape = self.get_kv_buffer_shape(lmcache_chunk_size)
-        self.tmp_gpu_buffer_ = torch.empty(
-            tmp_buffer_shape, dtype=self.dtype, device=self.device_
-        )
+        # Temporary GPU buffer for transfers — one buffer per group
+        self.tmp_gpu_buffers_: list[torch.Tensor] = [
+            torch.empty(
+                self.get_kv_buffer_shape(lmcache_chunk_size, group_idx),
+                dtype=group.dtype,
+                device=self.device_,
+            )
+            for group_idx, group in enumerate(
+                self.kv_layer_groups_manager_.kv_layer_groups
+            )
+        ]
 
         # Cuda streams
         self.cuda_stream_ = torch.cuda.Stream(device=self.device_)
@@ -112,7 +125,20 @@ class GPUCacheContext:
 
     @property
     def dtype(self) -> torch.dtype:
-        return get_dtype(self.kv_caches_, self.gpu_kv_format_)
+        """
+        Returns the dtype of the first KV layer group (for backward compat).
+        Use get_group_dtype() for per-group access.
+        """
+        return self.kv_layer_groups_manager_.kv_layer_groups[0].dtype
+
+    def get_group_dtype(self, group_idx: int) -> torch.dtype:
+        """
+        Returns the dtype of the KV cache for the given group.
+
+        Args:
+            group_idx: Index of the KV layer group.
+        """
+        return self.kv_layer_groups_manager_.kv_layer_groups[group_idx].dtype
 
     @property
     def device(self) -> torch.device:
@@ -125,9 +151,22 @@ class GPUCacheContext:
     @property
     def kv_pointers(self) -> torch.Tensor:
         """
-        Returns a GPU tensor of the KV cache pointers
+        Returns a GPU tensor of all KV cache pointers (all layers).
         """
         return self.kv_cache_pointers_
+
+    def get_group_kv_pointers(self, group_idx: int) -> torch.Tensor:
+        """
+        Returns a GPU tensor of KV cache pointers for the given group.
+
+        Args:
+            group_idx: Index of the KV layer group.
+        """
+        group = self.kv_layer_groups_manager_.kv_layer_groups[group_idx]
+        indices = torch.tensor(
+            group.layer_indices, dtype=torch.long, device=self.device_
+        )
+        return self.kv_cache_pointers_[indices]
 
     @property
     def stream(self) -> torch.cuda.Stream:
@@ -172,9 +211,17 @@ class GPUCacheContext:
     @property
     def hidden_dim_size(self) -> int:
         """
-        Returns the hidden dimension size of the model
+        Returns the hidden dimension size of the first group (for backward compat).
+        Use hidden_dim_sizes for per-group access.
         """
-        return self.hidden_dim_size_
+        return self.hidden_dim_sizes_[0]
+
+    @property
+    def hidden_dim_sizes(self) -> list[int]:
+        """
+        Returns the hidden dimension sizes for each KV layer group.
+        """
+        return self.hidden_dim_sizes_
 
     @property
     def is_mla(self) -> bool:
@@ -183,11 +230,22 @@ class GPUCacheContext:
         """
         return self.is_mla_
 
-    def get_tmp_gpu_buffer(self, num_tokens: int) -> torch.Tensor:
+    @property
+    def kv_layer_groups_manager(self) -> KVLayerGroupsManager:
         """
-        Returns the temporary GPU buffer for transfers
+        Returns the KV layer groups manager (grouped by shape and dtype)
         """
-        return self.tmp_gpu_buffer_[:, :, :num_tokens, :]
+        return self.kv_layer_groups_manager_
+
+    def get_tmp_gpu_buffer(self, num_tokens: int, group_idx: int = 0) -> torch.Tensor:
+        """
+        Returns the temporary GPU buffer for transfers for the given group.
+
+        Args:
+            num_tokens: Number of tokens to slice.
+            group_idx: Index of the KV layer group (default 0).
+        """
+        return self.tmp_gpu_buffers_[group_idx][:, :, :num_tokens, :]
 
     @_lmcache_nvtx_annotate
     def get_slot_mapping_tensor(self, gpu_block_ids: list[int]) -> torch.Tensor:
@@ -197,14 +255,21 @@ class GPUCacheContext:
         gpu_block_ids_tensor = list_to_gpu_tensor(gpu_block_ids, self.device_)
         return self.slot_mapping_tensor_[gpu_block_ids_tensor].flatten().contiguous()
 
-    def get_kv_buffer_shape(self, num_tokens: int) -> torch.Size:
+    def get_kv_buffer_shape(self, num_tokens: int, group_idx: int = 0) -> torch.Size:
         """
-        Returns the shape of the KV buffer for the given number of tokens
+        Returns the shape of the KV buffer for the given number of tokens and group.
+
+        Args:
+            num_tokens: Number of tokens.
+            group_idx: Index of the KV layer group (default 0).
         """
+        group = self.kv_layer_groups_manager_.kv_layer_groups[group_idx]
+        num_layers_in_group = group.num_layers
+        hidden_dim = self.hidden_dim_sizes_[group_idx]
         if self.is_mla_:
-            return torch.Size((1, self.num_layers_, num_tokens, self.hidden_dim_size_))
+            return torch.Size((1, num_layers_in_group, num_tokens, hidden_dim))
         else:
-            return torch.Size((2, self.num_layers_, num_tokens, self.hidden_dim_size_))
+            return torch.Size((2, num_layers_in_group, num_tokens, hidden_dim))
 
 
 class PlainGPUCacheContext:

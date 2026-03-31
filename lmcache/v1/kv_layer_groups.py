@@ -55,7 +55,7 @@ class KVLayerGroupInfo:
     @property
     def num_layers(self) -> int:
         """Return the number of layers in this group."""
-        return len(self.layer_names)
+        return len(self.layer_indices)
 
     @property
     def hidden_dim_size(self) -> int:
@@ -209,3 +209,49 @@ class KVLayerGroupsManager:
 
         # Print the group structure
         logger.info("KV layer groups: %s", kv_layer_groups)
+
+    def build_kv_layer_groups_from_list(
+        self, kv_caches: list[torch.Tensor]
+    ) -> None:
+        """Build KV layer groups from a list of KV cache tensors (no layer names).
+
+        Layers with the same shape and dtype are grouped together.
+        Since no layer names are available, ``layer_names`` will be empty lists.
+
+        If layer groups are already built (non-empty list), this method does nothing.
+
+        Args:
+            kv_caches: List of KV cache tensors, one per layer (0-based index).
+        """
+        # Skip if already built
+        if len(self.kv_layer_groups) > 0:
+            return
+
+        if len(kv_caches) == 0:
+            logger.debug("No KV caches available, skipping KV layer groups building")
+            return
+
+        # Group layers by (shape, dtype)
+        groups_dict: dict[tuple[torch.Size, torch.dtype], list[int]] = defaultdict(
+            list
+        )
+        for idx, kv_cache in enumerate(kv_caches):
+            key = (kv_cache.shape, kv_cache.dtype)
+            groups_dict[key].append(idx)
+
+        # Sort groups by the first layer index to maintain order
+        sorted_keys = sorted(groups_dict.keys(), key=lambda k: groups_dict[k][0])
+
+        kv_layer_groups: list[KVLayerGroupInfo] = []
+        for shape, dtype in sorted_keys:
+            layer_indices = groups_dict[(shape, dtype)]
+            group_info = KVLayerGroupInfo(
+                layer_names=[],
+                layer_indices=layer_indices,
+                shape=shape,
+                dtype=dtype,
+            )
+            kv_layer_groups.append(group_info)
+
+        self.kv_layer_groups = kv_layer_groups
+        logger.info("KV layer groups (from list): %s", kv_layer_groups)
