@@ -284,9 +284,6 @@ class MPCacheEngine:
         ):
             event = torch.cuda.Event(interprocess=True)
 
-            # Stage all block_ids to GPU once before the loop
-            all_block_ids_gpu = gpu_context.stage_block_ids(gpu_block_ids)
-
             # Wait for vLLM to finish
             vllm_event = torch.cuda.Event.from_ipc_handle(
                 gpu_context.device, event_ipc_handle
@@ -307,35 +304,46 @@ class MPCacheEngine:
                 obj_keys, layout_desc, "new"
             )
 
-            # NOTE: Store is not batched because some obj_keys may be
-            # skipped (not in reserved_dict), making block_ids
-            # non-contiguous. Batching would require torch.cat to
-            # reassemble block_ids, negating the benefit.
-            for idx, obj_key in enumerate(obj_keys):
-                if obj_key in reserved_dict:
-                    memory_obj = reserved_dict[obj_key]
-                else:
-                    continue
+            # Hold transfer_lock for the entire batch so that
+            # stage_block_ids (GIL + CUDA) and
+            # multi_layer_block_kv_transfer (release-GIL + CUDA)
+            # never run concurrently, preventing GIL <-> CUDA
+            # driver lock order inversion deadlock.
+            with gpu_context.transfer_lock:
+                # Stage all block_ids to GPU once before the loop
+                all_block_ids_gpu = gpu_context.stage_block_ids(gpu_block_ids)
 
-                chunk_block_ids_gpu = all_block_ids_gpu[
-                    idx * blocks_per_chunk : (idx + 1) * blocks_per_chunk
-                ]
+                # NOTE: Store is not batched because some obj_keys
+                # may be skipped (not in reserved_dict), making
+                # block_ids non-contiguous. Batching would require
+                # torch.cat to reassemble block_ids, negating the
+                # benefit.
+                for idx, obj_key in enumerate(obj_keys):
+                    if obj_key in reserved_dict:
+                        memory_obj = reserved_dict[obj_key]
+                    else:
+                        continue
 
-                # Copy from paged buffer to tmp GPU buffer, then to CPU
-                assert memory_obj.tensor is not None
-                tmp_buffer = gpu_context.get_tmp_gpu_buffer(self.chunk_size)
-                lmc_ops.multi_layer_block_kv_transfer(
-                    gpu_context.kv_pointers,
-                    [tmp_buffer.data_ptr()],
-                    chunk_block_ids_gpu,
-                    gpu_context.device,
-                    lmc_ops.TransferDirection.D2H,
-                    gpu_context.shape_desc,
-                    self.chunk_size,
-                    gpu_context.gpu_kv_format_,
-                    0,
-                )
-                lmcache_memcpy_async_d2h(tmp_buffer, memory_obj)
+                    chunk_block_ids_gpu = all_block_ids_gpu[
+                        idx * blocks_per_chunk : ((idx + 1) * blocks_per_chunk)
+                    ]
+
+                    # Copy from paged buffer to tmp GPU buffer,
+                    # then to CPU
+                    assert memory_obj.tensor is not None
+                    tmp_buffer = gpu_context.get_tmp_gpu_buffer(self.chunk_size)
+                    lmc_ops.multi_layer_block_kv_transfer(
+                        gpu_context.kv_pointers,
+                        [tmp_buffer.data_ptr()],
+                        chunk_block_ids_gpu,
+                        gpu_context.device,
+                        lmc_ops.TransferDirection.D2H,
+                        gpu_context.shape_desc,
+                        self.chunk_size,
+                        gpu_context.gpu_kv_format_,
+                        0,
+                    )
+                    lmcache_memcpy_async_d2h(tmp_buffer, memory_obj)
 
             event.record()
 
@@ -485,23 +493,31 @@ class MPCacheEngine:
             torch.cuda.device(gpu_context.device),
             torch.cuda.stream(gpu_context.stream),
         ):
-            # Stage all block_ids to GPU once before the loop
-            all_block_ids_gpu = gpu_context.stage_block_ids(gpu_block_ids)
-
             event = torch.cuda.Event(interprocess=True)
 
             prefetched_keys: list[ObjectKey] = []
             retrieve_succeeded = False
             try:
-                with self.storage_manager.read_prefetched_results(
-                    obj_keys
-                ) as memory_objs:
-                    if not memory_objs or len(memory_objs) != len(obj_keys):
-                        logger.error("Some keys not found during retrieve!")
-                        return event.ipc_handle(), False
+                # Hold transfer_lock for the entire batch
+                # so that stage_block_ids (GIL + CUDA) and
+                # multi_layer_block_kv_transfer
+                # (release-GIL + CUDA) never run
+                # concurrently, preventing GIL <-> CUDA
+                # driver lock order inversion deadlock.
+                with gpu_context.transfer_lock:
+                    all_block_ids_gpu = gpu_context.stage_block_ids(gpu_block_ids)
+                    with self.storage_manager.read_prefetched_results(
+                        obj_keys
+                    ) as memory_objs:
+                        if not memory_objs or len(memory_objs) != len(obj_keys):
+                            logger.error("Some keys not found during retrieve!")
+                            return (
+                                event.ipc_handle(),
+                                False,
+                            )
 
-                    prefetched_keys = obj_keys[: len(memory_objs)]
-                    _retrieve_loop(obj_keys, memory_objs)
+                        prefetched_keys = obj_keys[: len(memory_objs)]
+                        _retrieve_loop(obj_keys, memory_objs)
                 # Only set True when with-block exits normally
                 retrieve_succeeded = True
             except Exception:
