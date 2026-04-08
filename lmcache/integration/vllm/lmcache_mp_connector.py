@@ -714,6 +714,9 @@ class LMCacheMPConnectorDynamic(KVConnectorBase_V1):
             return 0, False
 
         if self.sync_mode:
+            assert isinstance(
+                self.scheduler_adapter, LMCacheMPSyncLookUpSchedulerAdapter
+            )
             ret = self.scheduler_adapter.sync_lookup(
                 request.request_id,
                 token_ids=list(request.all_token_ids),
