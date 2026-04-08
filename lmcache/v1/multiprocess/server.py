@@ -678,7 +678,19 @@ class MPCacheEngine:
 
         # Log chunk hashes for offline analysis (non-blocking)
         if self.chunk_hash_logger is not None:
-            self.chunk_hash_logger.log(key.request_id, chunk_hashes, model_name)
+            chunk_byte_size = sum(
+                s.numel() * torch.tensor([], dtype=d).element_size()
+                for s, d in zip(layout_desc.shapes, layout_desc.dtypes, strict=False)
+            )
+            self.chunk_hash_logger.log(
+                request_id=key.request_id,
+                chunk_hashes=chunk_hashes,
+                model_name=model_name,
+                chunk_size=self.chunk_size,
+                seq_len=len(key.token_ids),
+                dtypes=[str(d) for d in layout_desc.dtypes],
+                chunk_byte_size=chunk_byte_size,
+            )
 
         obj_keys = ipc_key_to_object_keys(key, chunk_hashes)
 

@@ -141,6 +141,10 @@ class ChunkHashLogger:
         request_id: str,
         chunk_hashes: list[bytes],
         model_name: str = "",
+        chunk_size: int = 0,
+        seq_len: int = 0,
+        dtypes: list[str] | None = None,
+        chunk_byte_size: int = 0,
     ) -> None:
         """Record chunk hashes for a lookup request (non-blocking).
 
@@ -148,10 +152,23 @@ class ChunkHashLogger:
             request_id: The request ID from the lookup.
             chunk_hashes: List of chunk hash bytes from TokenHasher.
             model_name: Model name associated with this lookup.
+            chunk_size: Number of tokens per chunk.
+            seq_len: Total number of tokens in the request.
+            dtypes: KV cache data types (e.g. ["float8_e4m3fn"]).
+            chunk_byte_size: Total bytes per chunk across all groups.
         """
         if self._shutdown:
             return
-        entry = (time.time(), request_id, chunk_hashes, model_name)
+        entry = (
+            time.time(),
+            request_id,
+            chunk_hashes,
+            model_name,
+            chunk_size,
+            seq_len,
+            dtypes or [],
+            chunk_byte_size,
+        )
         try:
             self._queue.put_nowait(entry)
         except queue.Full:
@@ -225,7 +242,16 @@ class ChunkHashLogger:
 
     def _write_entry(self, entry: tuple) -> None:
         """Write a single entry to the current JSONL file."""
-        timestamp, request_id, chunk_hashes, model_name = entry
+        (
+            timestamp,
+            request_id,
+            chunk_hashes,
+            model_name,
+            chunk_size,
+            seq_len,
+            dtypes,
+            chunk_byte_size,
+        ) = entry
 
         if self._needs_rotation(timestamp):
             self._rotate_file(timestamp)
@@ -234,6 +260,10 @@ class ChunkHashLogger:
             "timestamp": timestamp,
             "request_id": request_id,
             "model_name": model_name,
+            "chunk_size": chunk_size,
+            "seq_len": seq_len,
+            "dtypes": dtypes,
+            "chunk_byte_size": chunk_byte_size,
             "chunk_hashes": [
                 "0x" + h.hex() if isinstance(h, bytes) else hex(h) for h in chunk_hashes
             ],
