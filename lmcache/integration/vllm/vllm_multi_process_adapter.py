@@ -492,6 +492,96 @@ class LMCacheMPSchedulerAdapter:
         )
 
 
+class LMCacheMPSyncLookUPSchedulerAdapter(LMCacheMPSchedulerAdapter):
+    """LMCacheMPSchedulerAdapter subclass that uses the synchronous
+    SYNC_LOOKUP protocol instead of the two-phase LOOKUP + polling
+    path.
+
+    The SYNC_LOOKUP RPC performs L1 prefix scan and L2 existence
+    check in a single blocking round-trip, returning the hit count
+    directly.  L2-to-L1 data movement is deferred to the RETRIEVE
+    call, overlapping it with the forward pass of other scheduled
+    requests.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lookup_hit_counts: dict[str, int] = {}
+
+    @_lmcache_nvtx_annotate
+    def maybe_submit_lookup_request(
+        self,
+        request_id: str,
+        token_ids: list[int],
+    ):
+        """Submit a synchronous lookup request to LMCache.
+
+        Sends a SYNC_LOOKUP request to the server and blocks
+        until the hit count is returned.  Unlike the two-phase
+        protocol in the base class, this completes in a single
+        round-trip.
+        """
+        self._ensure_heartbeat_started()
+
+        if not self.is_healthy:
+            return
+
+        if request_id in self._lookup_hit_counts:
+            return
+
+        aligned_end = (len(token_ids) // self.chunk_size) * self.chunk_size
+
+        key = self._create_key(
+            token_ids,
+            start=0,
+            end=aligned_end,
+            request_id=request_id,
+        ).no_worker_id_version()
+
+        future = send_lmcache_request(
+            self.mq_client,
+            RequestType.SYNC_LOOKUP,
+            [key, self.tp_size],
+        )
+        try:
+            hit_chunks = future.result(timeout=self._mq_timeout)
+        except TimeoutError:
+            logger.warning(
+                "SYNC_LOOKUP request timed out after %ss. Marking server as unhealthy.",
+                self._mq_timeout,
+            )
+            self._health_event.clear()
+            return
+
+        logger.debug(
+            "SYNC_LOOKUP: request_id=%s hit %d chunks (%d tokens)",
+            request_id,
+            hit_chunks,
+            hit_chunks * self.chunk_size,
+        )
+        self._lookup_hit_counts[request_id] = hit_chunks
+
+    @_lmcache_nvtx_annotate
+    def check_lookup_result(self, request_id: str) -> int:
+        """Return the hit count from a prior SYNC_LOOKUP.
+
+        The result is already available — no network call needed.
+        """
+        if request_id not in self._lookup_hit_counts:
+            return 0
+        hit_tokens = self._lookup_hit_counts[request_id] * self.chunk_size
+        logger.debug(
+            "SYNC_LOOKUP check: request_id=%s returning %d tokens",
+            request_id,
+            hit_tokens,
+        )
+        return hit_tokens
+
+    def cleanup_lookup_result(self, request_id: str) -> None:
+        """Clean up sync lookup state for a finished request."""
+        self._lookup_hit_counts.pop(request_id, None)
+
+
 class LMCacheMPWorkerAdapter:
     def __init__(
         self,
@@ -738,6 +828,79 @@ class LMCacheMPWorkerAdapter:
         for request_id, op in zip(request_ids, ops, strict=False):
             self.submit_retrieve_request(request_id, op, event)
 
+    @_lmcache_nvtx_annotate
+    def batched_submit_store_requests_sync(
+        self,
+        request_ids: list[str],
+        ops: list[LoadStoreOp],
+        event: torch.cuda.Event,
+    ):
+        """Submit batched store requests and block until all complete.
+
+        This is the synchronous counterpart of
+        ``batched_submit_store_requests``.  Each request is submitted
+        individually and its future is awaited before proceeding.
+        """
+        for request_id, op in zip(request_ids, ops, strict=False):
+            self.submit_store_request(request_id, op, event)
+
+        # Block until every store future resolves
+        for request_id in list(request_ids):
+            future = self.store_futures.pop(request_id, None)
+            if future is None:
+                continue
+            try:
+                result = future.result(timeout=self._mq_timeout)
+                if not result:
+                    logger.error(
+                        "Sync store failed for request %s",
+                        request_id,
+                    )
+            except TimeoutError:
+                logger.warning(
+                    "Sync store timed out for request %s",
+                    request_id,
+                )
+
+    @_lmcache_nvtx_annotate
+    def batched_submit_retrieve_requests_sync(
+        self,
+        request_ids: list[str],
+        ops: list[LoadStoreOp],
+        event: torch.cuda.Event,
+    ):
+        """Submit batched retrieve requests and block until done.
+
+        This is the synchronous counterpart of
+        ``batched_submit_retrieve_requests``.  Each request is
+        submitted individually and its future is awaited before
+        proceeding.  On failure the affected block IDs are
+        recorded in ``error_block_ids``.
+        """
+        for request_id, op in zip(request_ids, ops, strict=False):
+            self.submit_retrieve_request(request_id, op, event)
+
+        # Block until every retrieve future resolves
+        for request_id in list(request_ids):
+            entry = self.retrieve_futures.pop(request_id, None)
+            if entry is None:
+                continue
+            future, block_ids = entry
+            try:
+                result = future.result(timeout=self._mq_timeout)
+                if not result:
+                    logger.error(
+                        "Sync retrieve failed for request %s",
+                        request_id,
+                    )
+                    self.error_block_ids.update(block_ids)
+            except TimeoutError:
+                logger.warning(
+                    "Sync retrieve timed out for request %s",
+                    request_id,
+                )
+                self.error_block_ids.update(block_ids)
+
     def _process_finished_stores(
         self,
         finished_req_ids_from_lmcache: set[str],
@@ -927,3 +1090,152 @@ class LMCacheMPWorkerAdapter:
             end=end,
             request_id=request_id,
         )
+
+
+class LMCacheMPSyncLookupWorkerAdapter(LMCacheMPWorkerAdapter):
+    """Worker adapter for the SYNC_LOOKUP protocol path.
+
+    When the scheduler uses
+    ``LMCacheMPSyncLookupSchedulerAdapter``, the server's
+    SYNC_LOOKUP creates a pending prefetch job whose L2->L1
+    data transfer may still be in progress when RETRIEVE is
+    requested.
+
+    This subclass intercepts ``submit_retrieve_request`` and
+    queues it internally.  A background thread polls
+    ``QUERY_PREFETCH_STATUS_WITH_REQ_ID(request_id)`` until
+    the prefetch completes.  Only then is the actual RETRIEVE
+    sent to the server, ensuring the GPU affinity thread pool
+    is never blocked waiting for L2->L1 transfers.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+
+        # Pending retrieves waiting for prefetch completion.
+        self._pending_retrieves: dict[str, tuple[LoadStoreOp, torch.cuda.Event]] = {}
+        self._pending_retrieves_lock = threading.Lock()
+        self._prefetch_poll_stop = threading.Event()
+        self._prefetch_poll_thread: threading.Thread | None = None
+
+        # Guard error_block_ids: the background polling thread
+        # may write to it while the main thread reads/clears it
+        # in get_block_ids_with_load_errors.
+        self._error_block_ids_lock = threading.Lock()
+
+    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
+        super().register_kv_caches(kv_caches)
+
+        # Start the prefetch polling thread after vLLM is
+        # fully ready.
+        self._prefetch_poll_thread = threading.Thread(
+            target=self._prefetch_ready_loop,
+            name="lmcache-prefetch-poll",
+            daemon=True,
+        )
+        self._prefetch_poll_thread.start()
+
+    @_lmcache_nvtx_annotate
+    def submit_retrieve_request(
+        self,
+        request_id: str,
+        op: LoadStoreOp,
+        event: torch.cuda.Event,
+    ):
+        """Queue a retrieve request until prefetch is ready.
+
+        Instead of sending RETRIEVE immediately (which would
+        block a server GPU thread if L2->L1 is still running),
+        this queues the request for the background polling
+        thread to dispatch.
+        """
+        if not self.is_healthy:
+            with self._error_block_ids_lock:
+                self.error_block_ids.update(op.block_ids)
+            return
+
+        with self._pending_retrieves_lock:
+            self._pending_retrieves[request_id] = (op, event)
+
+    def _do_submit_retrieve(
+        self,
+        request_id: str,
+        op: LoadStoreOp,
+        event: torch.cuda.Event,
+    ):
+        """Send the actual RETRIEVE request to the server."""
+        super().submit_retrieve_request(request_id, op, event)
+
+    def _prefetch_ready_loop(self):
+        """Background thread: poll prefetch status and
+        dispatch RETRIEVE."""
+        while not self._prefetch_poll_stop.is_set():
+            with self._pending_retrieves_lock:
+                pending_ids = list(self._pending_retrieves.keys())
+
+            for request_id in pending_ids:
+                if self._prefetch_poll_stop.is_set():
+                    break
+
+                if not self.is_healthy:
+                    with self._pending_retrieves_lock:
+                        entry = self._pending_retrieves.pop(request_id, None)
+                    if entry is not None:
+                        op, _event = entry
+                        with self._error_block_ids_lock:
+                            self.error_block_ids.update(op.block_ids)
+                    continue
+
+                try:
+                    result = send_lmcache_request(
+                        self.mq_client,
+                        RequestType.QUERY_PREFETCH_STATUS_WITH_REQ_ID,
+                        [request_id],
+                    ).result(timeout=self._mq_timeout)
+                except (TimeoutError, Exception):
+                    logger.debug(
+                        "QUERY_PREFETCH_STATUS_WITH_REQ_ID poll failed for %s",
+                        request_id,
+                        exc_info=True,
+                    )
+                    continue
+
+                if result is not None:
+                    with self._pending_retrieves_lock:
+                        entry = self._pending_retrieves.pop(request_id, None)
+                    if entry is not None:
+                        op, event = entry
+                        self._do_submit_retrieve(request_id, op, event)
+
+            # Sleep briefly to avoid tight-looping.
+            self._prefetch_poll_stop.wait(timeout=0.001)
+
+    @_lmcache_nvtx_annotate
+    def get_finished(
+        self, finished_req_ids_from_engine: set[str]
+    ) -> tuple[set[str] | None, set[str] | None]:
+        # Drain pending retrieves when unhealthy before
+        # calling super().
+        if not self.is_healthy:
+            with self._pending_retrieves_lock:
+                for _rid, (
+                    op,
+                    _event,
+                ) in self._pending_retrieves.items():
+                    with self._error_block_ids_lock:
+                        self.error_block_ids.update(op.block_ids)
+                self._pending_retrieves.clear()
+        return super().get_finished(finished_req_ids_from_engine)
+
+    def get_block_ids_with_load_errors(self) -> set[int]:
+        with self._error_block_ids_lock:
+            errors = self.error_block_ids.copy()
+            self.error_block_ids.clear()
+        return errors
+
+    def shutdown(self):
+        """Shutdown: stop polling thread, then delegate."""
+        self._prefetch_poll_stop.set()
+        if self._prefetch_poll_thread is not None:
+            self._prefetch_poll_thread.join(timeout=5.0)
+        super().shutdown()

@@ -148,6 +148,20 @@ class _PrefetchJob:
     request_id: str
 
 
+@dataclass
+class _PendingLookupState:
+    """State saved between SYNC_LOOKUP and RETRIEVE.
+
+    SYNC_LOOKUP stores the ``job_id`` here so that the worker
+    adapter can poll ``QUERY_PREFETCH_STATUS_WITH_REQ_ID``
+    to wait for L2-to-L1 data transfer to complete before
+    sending RETRIEVE.
+    """
+
+    job_id: int
+    """Prefetch job ID returned by ``lookup()``."""
+
+
 # Main class for the mp cache engine
 class MPCacheEngine:
     def __init__(
@@ -187,8 +201,15 @@ class MPCacheEngine:
         # TODO: implement periodic cleanup of stale _prefetch_jobs entries
         # for crash resilience (e.g., client calls lookup but never queries)
         self._prefetch_jobs: dict[int, _PrefetchJob] = {}
+        self._request_to_job_id: dict[str, int] = {}
         self._next_prefetch_job_id: int = 0
         self._prefetch_job_lock = threading.Lock()
+
+        # Pending lookup state for SYNC_LOOKUP -> RETRIEVE
+        # handoff.  Keyed by request_id; written by
+        # sync_lookup(), consumed by retrieve().
+        self._pending_lookups: dict[str, _PendingLookupState] = {}
+        self._pending_lookups_lock = threading.Lock()
 
     def register_kv_cache(
         self,
@@ -639,6 +660,7 @@ class MPCacheEngine:
             job_id = self._next_prefetch_job_id
             self._next_prefetch_job_id += 1
             self._prefetch_jobs[job_id] = job
+            self._request_to_job_id[job.request_id] = job_id
         return job_id
 
     def query_prefetch_lookup_hits(
@@ -674,12 +696,11 @@ class MPCacheEngine:
         self,
         prefetch_job_id: int,
     ) -> int | None:
-        """Poll the status of a prefetch job.
+        """Poll the status of a prefetch job (non-destructive peek).
 
-        Returns the chunk count when the prefetch is complete, or None
-        if it is still in progress.  The job entry is automatically
-        removed once a non-None result is returned (exactly-once
-        semantics).
+        Returns the chunk count when the prefetch is complete, or
+        None if it is still in progress.  Does **not** consume the
+        result — cleanup is handled by :meth:`end_session`.
 
         Args:
             prefetch_job_id: Job ID returned by lookup().
@@ -697,14 +718,10 @@ class MPCacheEngine:
             )
             return None
 
-        found_count = self.storage_manager.query_prefetch_status(job.handle)
+        found_count = self.storage_manager.query_prefetch_status(job.handle, pop=False)
         if found_count is None:
             return None
 
-        # NOTE(Kuntai): this assumes two things:
-        # 1. the world size is the same between keys
-        # 2. the lookup sort the keys in prefix order and breaks at the
-        #    first failure
         found_count = found_count // job.world_size
 
         self._event_bus.publish(
@@ -715,8 +732,96 @@ class MPCacheEngine:
             )
         )
 
+        return found_count
+
+    def query_prefetch_status_with_req_id(self, request_id: str) -> int | None:
+        """Query prefetch status by external request_id.
+
+        Same semantics as :meth:`query_prefetch_status` but keyed
+        by the external ``request_id`` instead of the server-
+        internal ``job_id``.
+
+        Non-destructive peek (``pop=False``); cleanup is handled
+        by :meth:`end_session`.
+
+        Args:
+            request_id: The external request ID.
+
+        Returns:
+            Chunk count (int) when done, ``None`` if still in
+            progress or no SYNC_LOOKUP was issued.
+        """
+        with self._pending_lookups_lock:
+            pending = self._pending_lookups.get(request_id)
+        if pending is None:
+            return None
+
         with self._prefetch_job_lock:
-            self._prefetch_jobs.pop(prefetch_job_id, None)
+            job = self._prefetch_jobs.get(pending.job_id)
+        if job is None:
+            return None
+
+        found_count = self.storage_manager.query_prefetch_status(job.handle, pop=False)
+        if found_count is None:
+            return None
+
+        return found_count // job.world_size
+
+    @_lmcache_nvtx_annotate
+    def sync_lookup(
+        self,
+        key: IPCCacheEngineKey,
+        tp_size: int,
+    ) -> int:
+        """Synchronous prefix lookup — returns hit count directly.
+
+        Internally calls :meth:`lookup` to submit a prefetch
+        request, then polls :meth:`query_prefetch_lookup_hits`
+        until the lookup phase completes.
+
+        When there are hits, saves a :class:`_PendingLookupState`
+        so that RETRIEVE workers can wait for the full prefetch
+        (L2->L1 data transfer) to finish via
+        :meth:`query_prefetch_status` before reading from L1.
+
+        Args:
+            key: Cache key with request_id embedded.
+            tp_size: Tensor-parallel size for MLA locking.
+
+        Returns:
+            Number of matched chunks (prefix hit count).
+        """
+        # Step 1: submit to the existing background prefetch loop
+        job_id = self.lookup(key, tp_size)
+
+        # Step 2: poll until the lookup phase finishes
+        while True:
+            found_count = self.query_prefetch_lookup_hits(job_id)
+            if found_count is not None:
+                break
+            time.sleep(0.005)  # 5 ms
+
+        # Step 3: set up RETRIEVE coordination
+        if found_count > 0:
+            with self._pending_lookups_lock:
+                self._pending_lookups[key.request_id] = _PendingLookupState(
+                    job_id=job_id
+                )
+        else:
+            # No hits — clean up the prefetch job and pop the
+            # prefetch controller result directly.
+            with self._prefetch_job_lock:
+                job = self._prefetch_jobs.pop(job_id, None)
+                self._request_to_job_id.pop(key.request_id, None)
+            if job is not None and job.handle.prefetch_request_id != -1:
+                self.storage_manager.query_prefetch_status(job.handle, pop=True)
+
+        logger.info(
+            "SYNC_LOOKUP[%s]: found_count=%d, world_size=%d",
+            key.request_id,
+            found_count,
+            key.world_size,
+        )
 
         return found_count
 
@@ -775,12 +880,25 @@ class MPCacheEngine:
         return self.chunk_size
 
     def end_session(self, request_id: str) -> None:
-        """Remove the session for a finished request.
+        """Remove the session and all associated prefetch state.
 
         Args:
-            request_id: The request ID whose session should be removed.
+            request_id: The request ID whose session should
+                be removed.
         """
         self.session_manager.remove(request_id)
+
+        # Clean up prefetch job (pop=True to consume the result
+        # from the prefetch controller, preventing memory leaks).
+        with self._prefetch_job_lock:
+            job_id = self._request_to_job_id.pop(request_id, None)
+            job = self._prefetch_jobs.pop(job_id, None) if job_id is not None else None
+        if job is not None and job.handle.prefetch_request_id != -1:
+            self.storage_manager.query_prefetch_status(job.handle, pop=True)
+
+        # Clean up pending lookup state (SYNC_LOOKUP path)
+        with self._pending_lookups_lock:
+            self._pending_lookups.pop(request_id, None)
 
     def report_status(self) -> dict:
         """Return a status dict for the entire cache engine."""
@@ -914,8 +1032,11 @@ def run_cache_server(
     )
     add_handler_helper(server, RequestType.STORE, engine.store)
     add_handler_helper(server, RequestType.LOOKUP, engine.lookup)
+    add_handler_helper(server, RequestType.SYNC_LOOKUP, engine.sync_lookup)
     add_handler_helper(
-        server, RequestType.QUERY_PREFETCH_STATUS, engine.query_prefetch_status
+        server,
+        RequestType.QUERY_PREFETCH_STATUS,
+        engine.query_prefetch_status,
     )
     add_handler_helper(
         server,
@@ -923,6 +1044,11 @@ def run_cache_server(
         engine.query_prefetch_lookup_hits,
     )
     add_handler_helper(server, RequestType.FREE_LOOKUP_LOCKS, engine.free_lookup_locks)
+    add_handler_helper(
+        server,
+        RequestType.QUERY_PREFETCH_STATUS_WITH_REQ_ID,
+        engine.query_prefetch_status_with_req_id,
+    )
     add_handler_helper(server, RequestType.RETRIEVE, engine.retrieve)
     add_handler_helper(server, RequestType.CLEAR, engine.clear)
     add_handler_helper(server, RequestType.GET_CHUNK_SIZE, engine.get_chunk_size)
@@ -943,8 +1069,10 @@ def run_cache_server(
     server.add_normal_thread_pool(
         [
             RequestType.LOOKUP,
+            RequestType.SYNC_LOOKUP,
             RequestType.QUERY_PREFETCH_STATUS,
             RequestType.QUERY_PREFETCH_LOOKUP_HITS,
+            RequestType.QUERY_PREFETCH_STATUS_WITH_REQ_ID,
             RequestType.FREE_LOOKUP_LOCKS,
             RequestType.END_SESSION,
             RequestType.CLEAR,
