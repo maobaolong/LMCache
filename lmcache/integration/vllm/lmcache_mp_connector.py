@@ -5,7 +5,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 import enum
-import inspect
 
 # Third Party
 from vllm.config import VllmConfig
@@ -48,12 +47,6 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = lmcache_init_logger(__name__)
-
-
-def _adapter_accepts_tp_size() -> bool:
-    """Check if the imported adapter accepts tp_size."""
-    sig = inspect.signature(LMCacheMPSchedulerAdapter.__init__)
-    return "tp_size" in sig.parameters
 
 
 # Helper functions
@@ -112,25 +105,19 @@ def create_scheduler_adapter(
     )
     tp_size = vllm_config.parallel_config.tensor_parallel_size
 
-    # Pass tp_size only when the adapter accepts it so that
-    # a newer vllm can still work with an older LMCache.
-    kwargs: dict[str, Any] = {}
-    if _adapter_accepts_tp_size():
-        kwargs["tp_size"] = tp_size
-
     adapter_cls = (
         LMCacheMPSyncLookUpSchedulerAdapter if sync_mode else LMCacheMPSchedulerAdapter
     )
     return adapter_cls(
-        server_url,
-        zmq_context,
-        vllm_config.model_config.model,
-        world_size,
-        kv_rank,
-        vllm_config.cache_config.block_size,
+        server_url=server_url,
+        context=zmq_context,
+        model_name=vllm_config.model_config.model,
+        world_size=world_size,
+        kv_rank=kv_rank,
+        vllm_block_size=vllm_config.cache_config.block_size,
+        tp_size=tp_size,
         mq_timeout=mq_timeout,
         heartbeat_interval=heartbeat_interval,
-        **kwargs,
     )
 
 
@@ -147,12 +134,12 @@ def create_worker_adapter(
         vllm_config,
     )
     return LMCacheMPWorkerAdapter(
-        server_url,
-        zmq_context,
-        vllm_config.model_config.model,
-        world_size,
-        kv_rank,
-        vllm_config.cache_config.block_size,
+        server_url=server_url,
+        context=zmq_context,
+        model_name=vllm_config.model_config.model,
+        world_size=world_size,
+        kv_rank=kv_rank,
+        vllm_block_size=vllm_config.cache_config.block_size,
         mq_timeout=mq_timeout,
         heartbeat_interval=heartbeat_interval,
     )
