@@ -96,6 +96,39 @@ def send_ping(
         return False
 
 
+@dataclass
+class ParallelStrategy:
+    use_mla: bool
+    """Whether to use the MLA."""
+
+    kv_world_size: int
+    """
+    The kv world size, kv_world_size may not be equal to the actual_world_size, 
+    in the case of mla, it will 'exclude' the effect of TP, the value is 
+    calculated by `extract_world_size_and_kv_rank` in `lmcache_mp_connector.py`.
+    """
+
+    kv_worker_id: int
+    """
+    The kv worker id of the sub-process, kv_worker_id may not be equal to the 
+    actual_worker_id, in the case of mla, it will 'exclude' the effect of TP, 
+    the value is calculated by `extract_world_size_and_kv_rank` in 
+    `lmcache_mp_connector.py`.
+    """
+
+    actual_world_size: int
+    """The actual world size."""
+
+    actual_worker_id: int
+    """The actual worker id of the sub-process."""
+
+    tp_size: int
+    """The tensor parallel size."""
+
+    pp_size: int
+    """The pipeline parallel size."""
+
+
 class HeartbeatThread(PeriodicThread):
     """Periodically checks server health via PING.
 
@@ -182,10 +215,8 @@ class LMCacheMPSchedulerAdapter:
         server_url: str,
         context: zmq.Context,
         model_name: str,
-        world_size: int,
-        kv_rank: int,
         vllm_block_size: int,
-        tp_size: int = 1,
+        parallel_strategy: ParallelStrategy,
         mq_timeout: float = DEFAULT_MQ_TIMEOUT,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         save_decode_cache: bool = False,
@@ -195,11 +226,10 @@ class LMCacheMPSchedulerAdapter:
             server_url: The server URL for the LMCache message queue
             context: The ZMQ context
             model_name: The model name used for LMCache keys
-            world_size: The world size used for LMCache keys
-            kv_rank: The kv rank used for LMCache keys
             vllm_block_size: The block size used in vLLM
-            tp_size: Tensor-parallel size for MLA
-                multi-reader locking (default 1).
+            parallel_strategy:
+                The parallel strategy, which includes `use_mla`,
+                `kv_world_size`, `kv_worker_id` and so on
             mq_timeout: Timeout in seconds for message queue requests.
             heartbeat_interval: Interval in seconds between heartbeat pings.
             save_decode_cache: Whether to save KV cache during decode phase.
@@ -217,8 +247,7 @@ class LMCacheMPSchedulerAdapter:
         self._finished_lookup_jobs: dict[int, int] = {}
 
         self.model_name = model_name
-        self.world_size = world_size
-        self.tp_size = tp_size
+        self.parallel_strategy = parallel_strategy
         self.save_decode_cache = save_decode_cache
 
         # Decode phase tracking: request IDs that have entered decode phase.
@@ -250,6 +279,16 @@ class LMCacheMPSchedulerAdapter:
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat: HeartbeatThread | None = None
         self._heartbeat_lock = threading.Lock()
+
+    @property
+    def world_size(self) -> int:
+        """Get the kv world size."""
+        return self.parallel_strategy.kv_world_size
+
+    @property
+    def tp_size(self) -> int:
+        """The tensor parallel size."""
+        return self.parallel_strategy.tp_size
 
     @property
     def is_healthy(self) -> bool:
@@ -560,9 +599,8 @@ class LMCacheMPWorkerAdapter:
         server_url: str,
         context: zmq.Context,
         model_name: str,
-        world_size: int,
-        kv_rank: int,
         vllm_block_size: int,
+        parallel_strategy: ParallelStrategy,
         mq_timeout: float = DEFAULT_MQ_TIMEOUT,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         save_decode_cache: bool = False,
@@ -596,8 +634,7 @@ class LMCacheMPWorkerAdapter:
         self._returned_finished: set[str] = set()
 
         self.model_name = model_name
-        self.world_size = world_size
-        self.worker_id = kv_rank
+        self.parallel_strategy = parallel_strategy
         self.save_decode_cache = save_decode_cache
 
         # Read chunk size from lmcache
@@ -643,6 +680,29 @@ class LMCacheMPWorkerAdapter:
     def is_healthy(self) -> bool:
         """Whether the LMCache server is healthy."""
         return self._health_event.is_set()
+
+    @property
+    def world_size(self) -> int:
+        """Get the kv world size."""
+        return self.parallel_strategy.kv_world_size
+
+    @property
+    def worker_id(self) -> int:
+        """Get the kv worker id."""
+        return self.parallel_strategy.kv_worker_id
+
+    @property
+    def use_mla(self) -> bool:
+        """Whether to use MLA."""
+        return self.parallel_strategy.use_mla
+
+    @property
+    def is_first_rank_of_pp_group(self) -> bool:
+        """Is the first rank of the pipeline parallel group."""
+        return (
+            self.parallel_strategy.actual_worker_id % self.parallel_strategy.tp_size
+            == 0
+        )
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """
