@@ -672,9 +672,11 @@ class LMCacheMPWorkerAdapter:
         mq_timeout: float = DEFAULT_MQ_TIMEOUT,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         save_decode_cache: bool = False,
+        sync_mode: bool = False,
     ):
         self.mq_client = MessageQueueClient(server_url, context)
         self._mq_timeout = mq_timeout
+        self.sync_mode = sync_mode
 
         # Instance id for GPU worker
         self.instance_id = os.getpid()
@@ -876,17 +878,20 @@ class LMCacheMPWorkerAdapter:
             self.error_block_ids.update(op.block_ids)
             return
 
-        result = None
-        while result is None:
-            result = send_lmcache_request(
-                self.mq_client,
-                RequestType.QUERY_PREFETCH_STATUS_WITH_REQ_ID,
-                [request_id],
-            ).result(timeout=self._mq_timeout)
-            assert result is not None
-            if result is not None:
-                break
-            time.sleep(0.005)
+        # In sync mode, SYNC_LOOKUP is used and L2 prefetch may still be
+        # in flight.  Poll QUERY_PREFETCH_STATUS_WITH_REQ_ID until the
+        # prefetch is ready before sending RETRIEVE.
+        if self.sync_mode:
+            result = None
+            while result is None:
+                result = send_lmcache_request(
+                    self.mq_client,
+                    RequestType.QUERY_PREFETCH_STATUS_WITH_REQ_ID,
+                    [request_id],
+                ).result(timeout=self._mq_timeout)
+                if result is not None:
+                    break
+                time.sleep(0.005)
 
         assert op.token_ids is not None
         key = self._create_key(op.token_ids, op.start, op.end, request_id=request_id)
@@ -942,9 +947,14 @@ class LMCacheMPWorkerAdapter:
         """
         for request_id, op in zip(request_ids, ops, strict=False):
             self.submit_retrieve_request(request_id, op, event)
-        for request_id, (r_future, _) in self.retrieve_futures.items():
-            r_future.result()
-        self.retrieve_futures.clear()
+
+        # In sync mode, block until all retrieves complete so that KV is
+        # ready before the model forward pass.  In async mode, futures are
+        # left for get_finished() to poll.
+        if self.sync_mode:
+            for request_id, (r_future, _) in self.retrieve_futures.items():
+                r_future.result()
+            self.retrieve_futures.clear()
 
     def _process_finished_stores(
         self,
