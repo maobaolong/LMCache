@@ -146,6 +146,7 @@ def create_worker_adapter(
     mq_timeout: float,
     heartbeat_interval: float,
     save_decode_cache: bool = False,
+    sync_mode: bool = False,
 ) -> LMCacheMPWorkerAdapter:
     world_size, kv_rank = extract_world_size_and_kv_rank(
         vllm_config.parallel_config.world_size,
@@ -171,6 +172,7 @@ def create_worker_adapter(
         mq_timeout=mq_timeout,
         heartbeat_interval=heartbeat_interval,
         save_decode_cache=save_decode_cache,
+        sync_mode=sync_mode,
     )
 
 
@@ -442,7 +444,7 @@ class LMCacheMPConnectorMetadata(KVConnectorMetadata):
         return self.__str__()
 
 
-class LMCacheMPConnector(KVConnectorBase_V1):
+class LMCacheMPConnectorDynamic(KVConnectorBase_V1):
     """
     The connector for LMCache multi-process mode.
 
@@ -510,6 +512,7 @@ class LMCacheMPConnector(KVConnectorBase_V1):
                 mq_timeout,
                 heartbeat_interval,
                 save_decode_cache=save_decode_cache,
+                sync_mode=self.sync_mode,
             )
         else:
             raise ValueError(f"Unknown KVConnectorRole: {self.role}")
