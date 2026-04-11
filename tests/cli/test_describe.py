@@ -36,7 +36,7 @@ SAMPLE_STATUS = {
             "kv_cache_layout": {
                 "num_layers": 32,
                 "block_size": 16,
-                "hidden_dim_size": 128,
+                "hidden_dim_sizes": "128",
                 "dtype": "torch.float16",
                 "is_mla": False,
                 "num_blocks": 2048,
@@ -45,6 +45,12 @@ SAMPLE_STATUS = {
         },
     },
     "active_sessions": 3,
+    "hit_stats": {
+        "total_requests": 50,
+        "total_tokens": 12800,
+        "total_retrieved_tokens": 8960,
+        "hit_rate": 0.7,
+    },
     "storage_manager": {
         "is_healthy": True,
         "l1_manager": {
@@ -173,6 +179,14 @@ class TestDescribeKvcacheFields:
         assert m["cached_objects"] == 1024
         assert m["active_sessions"] == 3
 
+        # Hit statistics section (list)
+        assert "hit_stats" in m
+        hs = m["hit_stats"]
+        assert hs["total_requests"] == 50
+        assert hs["total_tokens"] == 12800
+        assert hs["retrieved_tokens"] == 8960
+        assert hs["hit_rate"] == "70.0%"
+
         # Per-model section (list)
         assert "models" in m
         model = m["models"][0]
@@ -181,7 +195,7 @@ class TestDescribeKvcacheFields:
         assert model["gpu_ids"] == "0"
         assert model["num_layers"] == 32
         assert model["block_size"] == 16
-        assert model["hidden_dim_size"] == 128
+        assert model["hidden_dim_sizes"] == "128"
         assert model["dtype"] == "torch.float16"
         assert model["is_mla"] is False
         assert model["num_blocks"] == 2048

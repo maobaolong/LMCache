@@ -32,6 +32,8 @@ class Session:
     last_prefix_hash: Any = None
     num_chunks_processed: int = 0
     created_at: float = field(default_factory=time.time)
+    total_tokens: int = 0
+    retrieved_tokens: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def set_tokens(self, full_token_ids: list[int]) -> None:
@@ -107,6 +109,12 @@ class SessionManager:
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
 
+        # Cumulative stats accumulated when sessions end
+        self._stats_lock = threading.Lock()
+        self._total_requests: int = 0
+        self._total_tokens: int = 0
+        self._total_retrieved_tokens: int = 0
+
     def get_or_create(self, request_id: str) -> Session:
         """Get existing session or create a new one.
 
@@ -125,15 +133,22 @@ class SessionManager:
             return self._sessions[request_id]
 
     def remove(self, request_id: str) -> None:
-        """Remove a session by request_id.
+        """Remove a session and accumulate its stats.
 
         Args:
             request_id: Unique request identifier.
         """
         with self._lock:
-            if request_id in self._sessions:
-                del self._sessions[request_id]
-                logger.debug("Removed session for request_id=%s", request_id)
+            session = self._sessions.pop(request_id, None)
+        if session is not None:
+            with self._stats_lock:
+                self._total_requests += 1
+                self._total_tokens += session.total_tokens
+                self._total_retrieved_tokens += session.retrieved_tokens
+            logger.debug(
+                "Removed session for request_id=%s",
+                request_id,
+            )
 
     def cleanup_expired(self) -> int:
         """Remove sessions that have exceeded their TTL.
@@ -142,13 +157,15 @@ class SessionManager:
             Number of sessions removed.
         """
         now = time.time()
-        expired = []
         with self._lock:
-            for rid, session in self._sessions.items():
-                if now - session.created_at > self._ttl:
-                    expired.append(rid)
-            for rid in expired:
-                del self._sessions[rid]
+            expired = [
+                rid
+                for rid, s in self._sessions.items()
+                if now - s.created_at > self._ttl
+            ]
+
+        for rid in expired:
+            self.remove(rid)
 
         if expired:
             logger.info("Cleaned up %d expired sessions", len(expired))
@@ -162,3 +179,22 @@ class SessionManager:
         """
         with self._lock:
             return len(self._sessions)
+
+    def report_hit_stats(self) -> dict[str, int | float]:
+        """Return cumulative hit statistics.
+
+        Returns:
+            Dict with total_requests, total_tokens,
+            total_retrieved_tokens, and hit_rate.
+        """
+        with self._stats_lock:
+            total_req = self._total_requests
+            total_tok = self._total_tokens
+            retrieved_tok = self._total_retrieved_tokens
+        hit_rate = round(retrieved_tok / total_tok, 4) if total_tok > 0 else 0.0
+        return {
+            "total_requests": total_req,
+            "total_tokens": total_tok,
+            "total_retrieved_tokens": retrieved_tok,
+            "hit_rate": hit_rate,
+        }

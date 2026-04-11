@@ -584,6 +584,7 @@ class MPCacheEngine:
                 )
 
         tokens_retrieved = len(obj_keys) * self.chunk_size
+        session.retrieved_tokens += tokens_retrieved
         ed = time.perf_counter()
         logger.info(
             "Retrieved %d tokens in %.3f seconds",
@@ -629,6 +630,11 @@ class MPCacheEngine:
             Prefetch job ID for polling via query_prefetch_status.
         """
         model_name, world_size = key.model_name, key.world_size
+
+        # Record total tokens on the session for hit-rate tracking
+        session = self.session_manager.get_or_create(key.request_id)
+        session.total_tokens = len(key.token_ids)
+
         self._event_bus.publish(
             Event(
                 event_type=EventType.MP_LOOKUP_PREFETCH_START,
@@ -864,6 +870,10 @@ class MPCacheEngine:
                 break
             time.sleep(0.005)  # 5 ms
 
+        # Record total tokens on the session for hit-rate tracking
+        session = self.session_manager.get_or_create(key.request_id)
+        session.total_tokens = len(key.token_ids)
+
         # Step 3: set up RETRIEVE coordination
         if found_count > 0:
             # Save pending state so QUERY_PREFETCH_STATUS_WITH_REQ_ID
@@ -993,6 +1003,8 @@ class MPCacheEngine:
                 }
             gpu_context_meta[str(gpu_id)] = entry
 
+        hit_stats = self.session_manager.report_hit_stats()
+
         return {
             "is_healthy": sm["is_healthy"],
             "engine_type": self.__class__.__name__,
@@ -1002,6 +1014,7 @@ class MPCacheEngine:
             "gpu_context_meta": gpu_context_meta,
             "active_sessions": self.session_manager.active_count(),
             "active_prefetch_jobs": len(self._prefetch_jobs),
+            "hit_stats": hit_stats,
             "storage_manager": sm,
         }
 

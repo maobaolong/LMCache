@@ -121,11 +121,12 @@ function renderOverview(data) {
 
     var sm = data.storage_manager || {};
     var l1 = sm.l1_manager || {};
-    var l1Capacity = l1.capacity || 0;
-    var l1Used = l1.used || 0;
-    var l1Pct = l1Capacity > 0
-        ? Math.round((l1Used / l1Capacity) * 100)
+    var l1TotalBytes = l1.memory_total_bytes || 0;
+    var l1UsedBytes = l1.memory_used_bytes || 0;
+    var l1Pct = l1TotalBytes > 0
+        ? Math.round((l1UsedBytes / l1TotalBytes) * 100)
         : 0;
+    var l1Objects = l1.total_object_count || 0;
 
     var barColor = l1Pct > 90
         ? "#dc3545"
@@ -203,7 +204,9 @@ function renderOverview(data) {
     html += l1Pct + "%</div>";
     html += "      </div>";
     html += '      <small class="text-muted mt-1 d-block">';
-    html += l1Used + " / " + l1Capacity + " objects</small>";
+    html += formatBytes(l1UsedBytes) + " / ";
+    html += formatBytes(l1TotalBytes);
+    html += " (" + l1Objects + " objects)</small>";
     html += "    </div>";
     html += "  </div>";
     html += "</div>";
@@ -217,7 +220,114 @@ function renderOverview(data) {
     html += "  </div>";
     html += "</div>";
 
+    // Row 3: Hit Statistics
+    html += renderHitStats(data.hit_stats);
+
     container.innerHTML = html;
+}
+
+// ---------------------------------------------------------------
+// Hit Statistics (Overview sub-section)
+// ---------------------------------------------------------------
+function renderHitStats(stats) {
+    if (!stats) {
+        return "";
+    }
+
+    var hitRate = stats.hit_rate || 0;
+    var hitPct = Math.round(hitRate * 100);
+    var hitColor = hitPct >= 80
+        ? "#198754"
+        : hitPct >= 50
+            ? "#ffc107"
+            : "#dc3545";
+
+    var totalReqs = stats.total_requests || 0;
+    var totalTokens = stats.total_tokens || 0;
+    var retrievedTokens = stats.total_retrieved_tokens || 0;
+
+    var html = "";
+
+    // Section divider
+    html += '<div class="col-12 mt-2 mb-2">';
+    html += '  <h5 class="text-muted">';
+    html += '    <i class="bi bi-bullseye"></i>';
+    html += "    Hit Statistics";
+    html += "  </h5>";
+    html += "</div>";
+
+    // Hit rate card
+    html += '<div class="col-md-4 mb-3">';
+    html += '  <div class="card stat-card">';
+    html += '    <div class="card-body">';
+    html += '      <div class="stat-label">GPU Hit Rate</div>';
+    html += '      <div class="stat-value" style="color:';
+    html += hitColor + '">' + hitPct + "%</div>";
+    html += '      <div class="memory-bar mt-2">';
+    html += '        <div class="bar-fill" style="width:';
+    html += hitPct + "%;background-color:";
+    html += hitColor + '">' + hitPct + "%</div>";
+    html += "      </div>";
+    html += '      <small class="text-muted mt-1 d-block">';
+    html += formatTokenCount(retrievedTokens);
+    html += " / " + formatTokenCount(totalTokens);
+    html += " tokens</small>";
+    html += "    </div>";
+    html += "  </div>";
+    html += "</div>";
+
+    // Total requests card
+    html += '<div class="col-md-4 mb-3">';
+    html += '  <div class="card stat-card">';
+    html += '    <div class="card-body">';
+    html += '      <div class="stat-label">Total Requests</div>';
+    html += '      <div class="stat-value">';
+    html += totalReqs + "</div>";
+    html += '      <small class="text-muted">';
+    html += formatTokenCount(totalTokens);
+    html += " tokens total</small>";
+    html += "    </div>";
+    html += "  </div>";
+    html += "</div>";
+
+    // Retrieved tokens card
+    html += '<div class="col-md-4 mb-3">';
+    html += '  <div class="card stat-card">';
+    html += '    <div class="card-body">';
+    html += '      <div class="stat-label">';
+    html += "GPU Retrieved</div>";
+    html += '      <div class="stat-value">';
+    html += formatTokenCount(retrievedTokens) + "</div>";
+    html += '      <small class="text-muted">';
+    html += "tokens written to GPU</small>";
+    html += "    </div>";
+    html += "  </div>";
+    html += "</div>";
+
+    return html;
+}
+
+function formatTokenCount(count) {
+    if (count >= 1000000) {
+        return (count / 1000000).toFixed(1) + "M";
+    }
+    if (count >= 1000) {
+        return (count / 1000).toFixed(1) + "K";
+    }
+    return String(count);
+}
+
+function formatBytes(bytes) {
+    if (bytes >= 1073741824) {
+        return (bytes / 1073741824).toFixed(2) + " GB";
+    }
+    if (bytes >= 1048576) {
+        return (bytes / 1048576).toFixed(1) + " MB";
+    }
+    if (bytes >= 1024) {
+        return (bytes / 1024).toFixed(1) + " KB";
+    }
+    return bytes + " B";
 }
 
 // ---------------------------------------------------------------
