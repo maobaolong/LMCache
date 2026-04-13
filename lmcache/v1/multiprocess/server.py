@@ -738,6 +738,11 @@ class MPCacheEngine:
             )
         )
 
+        # set lookup ipc key, for session manager to use and generate object keys
+        session = self.session_manager.get_or_create(key.request_id)
+        session.set_tokens(list(key.token_ids))
+        session.lookup_ipc_key = key
+
         obj_keys = ipc_key_to_object_keys(key, chunk_hashes)
 
         handle = self.storage_manager.submit_prefetch_task(
@@ -1062,7 +1067,23 @@ class MPCacheEngine:
                 metadata={"request_id": request_id},
             )
         )
-        self.session_manager.remove(request_id)
+        session = self.session_manager.remove(request_id)
+        if session is None:
+            logger.warning("Session %s not found, skipping touch", request_id)
+            return
+        if session.lookup_ipc_key is None:
+            logger.warning(
+                "Session %s has no lookup ipc key, skipping touch", request_id
+            )
+            return
+
+        chunk_hashes = [TokenHasher.hash_to_bytes(h) for h in session.get_hashes(0)]
+        obj_keys = ipc_key_to_object_keys(session.lookup_ipc_key, chunk_hashes)
+        # unified touch of all keys, which include retrieved and stored keys
+        # TODO(chunxiaozheng): when l2 is enabled, the prefetched keys from l2 are temp
+        #  and will be deleted after finish_read_prefetched, when we touch all keys,
+        #  these keys has been deleted and will not be touched.
+        self.storage_manager.touch_l1_keys(obj_keys)
 
         # Clean up prefetch job (pop=True to consume the result from
         # the prefetch controller, preventing memory leaks).

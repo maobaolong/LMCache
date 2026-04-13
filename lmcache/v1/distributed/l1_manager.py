@@ -311,6 +311,7 @@ class L1Manager:
         need_to_free_keys: list[ObjectKey] = []
         ret: dict[ObjectKey, L1Error] = {}
         successful_keys: list[ObjectKey] = []
+        touch_keys: list[ObjectKey] = []
 
         for key in keys:
             entry = self._objects.get(key, None)
@@ -346,11 +347,18 @@ class L1Manager:
             # overhead (TTLLock is C++ std::atomic).
             for _ in range(total):
                 entry.read_lock.unlock()
-            if entry.is_temporary and not entry.read_lock.is_locked():
-                # NOTE: temporary objects shouldn't have write-locks
-                need_to_free.append(entry.memory_obj)
-                need_to_free_keys.append(key)
-                del self._objects[key]
+            if not entry.read_lock.is_locked():
+                if entry.is_temporary:
+                    # NOTE: temporary objects shouldn't have write-locks
+                    need_to_free.append(entry.memory_obj)
+                    need_to_free_keys.append(key)
+                    del self._objects[key]
+                else:
+                    # only the following two conditions are met,
+                    # trigger `on_keys_touched` to update the LRU order.
+                    # 1. non-temporary: temporary keys will be deleted;
+                    # 2. non-read-locked: read-locked keys will not be evicted.
+                    touch_keys.append(key)
 
             ret[key] = L1Error.SUCCESS
             successful_keys.append(key)
@@ -358,7 +366,7 @@ class L1Manager:
         self._memory_manager.free(need_to_free)
 
         for listener in self._registered_listeners:
-            listener.on_l1_keys_read_finished(successful_keys)
+            listener.on_l1_keys_read_finished(touch_keys)
             listener.on_l1_keys_deleted_by_manager(need_to_free_keys)
         self._event_bus.publish(
             Event(
@@ -649,6 +657,15 @@ class L1Manager:
             )
         )
         return ret
+
+    def touch_keys(self, keys: list[ObjectKey]):
+        """Touch the given keys, marking the keys as accessed(retrieved or stored).
+
+        Args:
+            keys: The list of object keys to touch.
+        """
+        for listener in self._registered_listeners:
+            listener.on_l1_keys_accessed(keys)
 
     @l1_mgr_synchronized
     def clear(self, force: bool = False) -> None:
