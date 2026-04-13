@@ -41,10 +41,6 @@ from lmcache.v1.mp_observability.config import (
 from lmcache.v1.mp_observability.event import Event, EventType
 from lmcache.v1.mp_observability.event_bus import get_event_bus
 from lmcache.v1.mp_observability.otel_init import register_gauge
-from lmcache.v1.multiprocess.chunk_hash_logger import (
-    ChunkHashLogConfig,
-    ChunkHashLogger,
-)
 from lmcache.v1.multiprocess.config import (
     MPServerConfig,
     add_mp_server_args,
@@ -183,7 +179,6 @@ class MPCacheEngine:
         storage_manager_config: StorageManagerConfig,
         chunk_size: int = 256,
         hash_algorithm: str = "blake3",
-        chunk_hash_log_config: ChunkHashLogConfig | None = None,
     ):
         # GPU ID -> KV cache tensors
         self.gpu_contexts: dict[int, GPUCacheContext] = {}
@@ -227,13 +222,6 @@ class MPCacheEngine:
         # retrieve().
         self._pending_lookups: dict[str, _PendingLookupState] = {}
         self._pending_lookups_lock = threading.Lock()
-
-        # Optional chunk hash file logger for offline analysis
-        self.chunk_hash_logger: ChunkHashLogger | None = None
-        if chunk_hash_log_config and chunk_hash_log_config.enabled:
-            self.chunk_hash_logger = ChunkHashLogger(
-                config=chunk_hash_log_config,
-            )
 
     def register_kv_cache(
         self,
@@ -678,21 +666,22 @@ class MPCacheEngine:
                 )
             )
 
-        # Log chunk hashes for offline analysis (non-blocking)
-        if self.chunk_hash_logger is not None:
-            chunk_byte_size = sum(
-                s.numel() * torch.tensor([], dtype=d).element_size()
-                for s, d in zip(layout_desc.shapes, layout_desc.dtypes, strict=False)
+        # Publish lookup event via EventBus for observability subscribers
+        self._event_bus.publish(
+            Event(
+                event_type=EventType.MP_LOOKUP,
+                session_id=key.request_id,
+                metadata={
+                    "request_id": key.request_id,
+                    "chunk_hashes": chunk_hashes,
+                    "model_name": model_name,
+                    "chunk_size": self.chunk_size,
+                    "seq_len": len(key.token_ids),
+                    "dtypes": [str(d) for d in layout_desc.dtypes],
+                    "shapes": [list(s) for s in layout_desc.shapes],
+                },
             )
-            self.chunk_hash_logger.log(
-                request_id=key.request_id,
-                chunk_hashes=chunk_hashes,
-                model_name=model_name,
-                chunk_size=self.chunk_size,
-                seq_len=len(key.token_ids),
-                dtypes=[str(d) for d in layout_desc.dtypes],
-                chunk_byte_size=chunk_byte_size,
-            )
+        )
 
         obj_keys = ipc_key_to_object_keys(key, chunk_hashes)
 
@@ -1044,10 +1033,6 @@ class MPCacheEngine:
         """
         Closes the MPCacheEngine and releases all resources.
         """
-        # Close chunk hash logger
-        if self.chunk_hash_logger is not None:
-            self.chunk_hash_logger.close()
-
         # Close storage manager
         self.storage_manager.close()
         logger.info("MPCacheEngine closed")
@@ -1111,7 +1096,6 @@ def run_cache_server(
         storage_manager_config=storage_manager_config,
         chunk_size=mp_config.chunk_size,
         hash_algorithm=mp_config.hash_algorithm,
-        chunk_hash_log_config=mp_config.chunk_hash_log,
     )
 
     # Initialize the message queue server
