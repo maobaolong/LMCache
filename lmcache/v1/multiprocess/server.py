@@ -55,9 +55,7 @@ from lmcache.v1.multiprocess.custom_types import (
     IPCCacheEngineKey,
     KVCache,
 )
-from lmcache.v1.multiprocess.gpu_context import (
-    GPUCacheContext,
-)
+from lmcache.v1.multiprocess.gpu_context import GPUCacheContext
 from lmcache.v1.multiprocess.mp_runtime_plugin_launcher import (
     MPRuntimePluginLauncher,
 )
@@ -69,6 +67,7 @@ from lmcache.v1.multiprocess.protocol import (
 )
 from lmcache.v1.multiprocess.session import SessionManager
 from lmcache.v1.multiprocess.token_hasher import TokenHasher
+from lmcache.v1.platform.cache_context import create_cache_context
 import lmcache.c_ops as lmc_ops
 
 logger = init_logger(__name__)
@@ -255,7 +254,7 @@ class MPCacheEngine:
             layout_hints: See :class:`LayoutHints`.  Forwarded to
                 :class:`GPUCacheContext` for GPU KV format detection.
         """
-        gpu_context = GPUCacheContext(
+        gpu_context = create_cache_context(
             kv_caches,
             self.chunk_size,
             layout_hints=layout_hints or None,
