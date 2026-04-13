@@ -20,12 +20,12 @@ from fastapi.testclient import TestClient
 import pytest
 
 # First Party
+from lmcache.v1.multiprocess.http_apis.cache_api import clear_cache
+from lmcache.v1.multiprocess.http_apis.healthcheck_api import healthcheck
+from lmcache.v1.multiprocess.http_apis.root_api import root
+from lmcache.v1.multiprocess.http_apis.status_api import status
 from lmcache.v1.multiprocess.http_server import (
     _FRONTEND_DIR,
-    clear_cache,
-    healthcheck,
-    root,
-    status,
 )
 
 # ------------------------------------------------------------------
