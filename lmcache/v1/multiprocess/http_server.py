@@ -5,8 +5,7 @@ from pathlib import Path
 import argparse
 
 # Third Party
-from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import torch
 import uvicorn
@@ -31,6 +30,9 @@ from lmcache.v1.multiprocess.config import (
     add_mp_server_args,
     parse_args_to_http_frontend_config,
     parse_args_to_mp_server_config,
+)
+from lmcache.v1.multiprocess.http_api_registry import (
+    HTTPAPIRegistry,
 )
 
 logger = init_logger(__name__)
@@ -70,6 +72,7 @@ async def lifespan(app: FastAPI):
         storage_manager_config=_configs["storage_manager"],
         obs_config=_configs["observability"],
         return_engine=True,
+        start_prometheus_http_server=False,
     )
     assert result is not None, "run_cache_server returned None with return_engine=True"
     zmq_server, engine, plugin_launcher = result
@@ -102,68 +105,9 @@ if _FRONTEND_DIR.is_dir():
         name="static",
     )
 
-
-@app.get("/")
-async def root():
-    """Serve the frontend dashboard if available."""
-    index = _FRONTEND_DIR / "index.html"
-    if index.is_file():
-        return FileResponse(str(index))
-    return {"status": "ok", "service": "LMCache HTTP API"}
-
-
-@app.get("/api/healthcheck")
-async def healthcheck(request: Request):
-    """
-    Health check endpoint for k8s liveness/readiness probes.
-
-    Checks:
-        - HTTP server is alive (implicit: if you get a response)
-        - Cache engine is alive
-    """
-    engine = getattr(request.app.state, "engine", None)
-    if engine is None:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "unhealthy", "reason": "engine not initialized"},
-        )
-
-    return {"status": "healthy"}
-
-
-@app.post("/api/clear-cache")
-async def clear_cache(request: Request):
-    """
-    Force-clear all KV cache data stored in L1 (CPU) memory.
-
-    This clears all objects including those with active read/write locks.
-    In-flight store or prefetch operations may be corrupted.
-    """
-    engine = getattr(request.app.state, "engine", None)
-    if engine is None:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "error", "reason": "engine not initialized"},
-        )
-
-    engine.clear()
-    logger.info("Cache cleared via HTTP API")
-    return {"status": "ok"}
-
-
-@app.get("/api/status")
-async def status(request: Request):
-    """
-    Detailed status endpoint for inspecting internal state of all
-    MP components (L1 cache, L2 adapters, controllers, sessions).
-    """
-    engine = getattr(request.app.state, "engine", None)
-    if engine is None:
-        return JSONResponse(
-            status_code=503,
-            content={"error": "engine not initialized"},
-        )
-    return engine.report_status()
+# Automatically discover and register all HTTP API endpoints
+registry = HTTPAPIRegistry(app)
+registry.register_all_apis()
 
 
 def run_http_server(
