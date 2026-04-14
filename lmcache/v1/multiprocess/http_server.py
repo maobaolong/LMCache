@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 import argparse
+import asyncio
 
 # Third Party
 from fastapi import FastAPI
@@ -143,7 +144,7 @@ def run_http_server(
         http_config.http_host,
         http_config.http_port,
     )
-    server.run()
+    asyncio.run(server.serve())
 
 
 def parse_args():
