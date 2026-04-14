@@ -255,12 +255,14 @@ def init_observability(
             L0LifecycleSubscriber,
             L1MetricsSubscriber,
             L2MetricsSubscriber,
+            MPEngineMetricsSubscriber,
             SMMetricsSubscriber,
         )
 
         bus.register_subscriber(L0LifecycleSubscriber())
         bus.register_subscriber(L1MetricsSubscriber())
         bus.register_subscriber(L2MetricsSubscriber())
+        bus.register_subscriber(MPEngineMetricsSubscriber())
         bus.register_subscriber(SMMetricsSubscriber())
 
     if obs_config.logging_enabled:

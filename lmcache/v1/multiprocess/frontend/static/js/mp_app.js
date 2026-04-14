@@ -37,7 +37,28 @@ window.addEventListener("DOMContentLoaded", () => {
     document.getElementById("jsonSearchInput")
         .addEventListener("input", filterJson);
 
+    // New tab refresh buttons
+    document.getElementById("refreshPeriodicThreadsBtn")
+        .addEventListener("click", refreshPeriodicThreads);
+    document.getElementById("refreshThreadsBtn")
+        .addEventListener("click", refreshThreads);
+    document.getElementById("refreshEnvBtn")
+        .addEventListener("click", refreshEnv);
+    document.getElementById("refreshLogLevelBtn")
+        .addEventListener("click", refreshLogLevel);
+    document.getElementById("refreshMetricsBtn")
+        .addEventListener("click", refreshMetrics);
+
+    // Search filters for new tabs
+    document.getElementById("envSearchInput")
+        .addEventListener("input", filterEnv);
+    document.getElementById("loggerSearchInput")
+        .addEventListener("input", filterLoggers);
+    document.getElementById("metricsSearchInput")
+        .addEventListener("input", filterMetrics);
+
     // Initial load
+    loadVersionInfo();
     refreshAll();
 });
 
@@ -61,6 +82,27 @@ function toggleAutoRefresh() {
             clearInterval(autoRefreshTimer);
             autoRefreshTimer = null;
         }
+    }
+}
+
+async function loadVersionInfo() {
+    try {
+        var results = await Promise.all([
+            fetch(baseUrl + "/version"),
+            fetch(baseUrl + "/commit_id")
+        ]);
+        var version = results[0].ok
+            ? await results[0].json() : "unknown";
+        var commitId = results[1].ok
+            ? await results[1].json() : "unknown";
+        var shortCommit = typeof commitId === "string"
+            ? commitId.substring(0, 8) : commitId;
+        var badge = document.getElementById("versionBadge");
+        badge.textContent = "v" + version
+            + " (" + shortCommit + ")";
+        badge.style.display = "inline";
+    } catch (err) {
+        console.warn("Failed to load version info:", err);
     }
 }
 
@@ -108,6 +150,12 @@ function renderAll(data) {
     renderStorage(data);
     renderGpuContexts(data);
     renderRawJson(data);
+    // Refresh all auxiliary tabs
+    refreshPeriodicThreads();
+    refreshThreads();
+    refreshEnv();
+    refreshLogLevel();
+    refreshMetrics();
 }
 
 // ---------------------------------------------------------------
@@ -220,7 +268,146 @@ function renderOverview(data) {
     html += "  </div>";
     html += "</div>";
 
-    // Row 3: Hit Statistics
+    // Row 3: Prefetch & Pending
+    var activePrefetch = data.active_prefetch_jobs || 0;
+    var pendingLookups = data.pending_lookup_count || 0;
+    var nextJobId = data.next_prefetch_job_id || 0;
+
+    html += '<div class="col-12 mt-2 mb-2">';
+    html += '  <h5 class="text-muted">';
+    html += '    <i class="bi bi-hourglass-split"></i>';
+    html += "    Pending & Prefetch";
+    html += "  </h5>";
+    html += "</div>";
+
+    html += '<div class="col-md-3 mb-3">';
+    html += '  <div class="card stat-card">';
+    html += '    <div class="card-body">';
+    html += '      <div class="stat-label">';
+    html += "Active Prefetch Jobs</div>";
+    html += '      <div class="stat-value">';
+    html += activePrefetch + "</div>";
+    html += '      <small class="text-muted">next ID: ';
+    html += nextJobId + "</small>";
+    html += "    </div>";
+    html += "  </div>";
+    html += "</div>";
+
+    html += '<div class="col-md-3 mb-3">';
+    html += '  <div class="card stat-card">';
+    html += '    <div class="card-body">';
+    html += '      <div class="stat-label">';
+    html += "Pending Lookups</div>";
+    html += '      <div class="stat-value">';
+    html += pendingLookups + "</div>";
+    html += "    </div>";
+    html += "  </div>";
+    html += "</div>";
+
+    // Pending request IDs (collapsed list)
+    var pendingReqIds = data.pending_request_ids || [];
+    var pendingLookupIds = data.pending_lookup_request_ids || [];
+    html += '<div class="col-md-3 mb-3">';
+    html += '  <div class="card stat-card">';
+    html += '    <div class="card-body">';
+    html += '      <div class="stat-label">';
+    html += "Pending Requests</div>";
+    html += '      <div class="stat-value">';
+    html += pendingReqIds.length + "</div>";
+    if (pendingReqIds.length > 0) {
+        html += '      <small class="text-muted">';
+        html += escapeHtml(
+            pendingReqIds.slice(0, 3).join(", ")
+        );
+        if (pendingReqIds.length > 3) {
+            html += " +" + (pendingReqIds.length - 3)
+                + " more";
+        }
+        html += "</small>";
+    }
+    html += "    </div>";
+    html += "  </div>";
+    html += "</div>";
+
+    // Prefetch job IDs
+    var prefetchJobIds = data.prefetch_job_ids || [];
+    html += '<div class="col-md-3 mb-3">';
+    html += '  <div class="card stat-card">';
+    html += '    <div class="card-body">';
+    html += '      <div class="stat-label">';
+    html += "Prefetch Job IDs</div>";
+    html += '      <div class="stat-value">';
+    html += prefetchJobIds.length + "</div>";
+    if (prefetchJobIds.length > 0) {
+        html += '      <small class="text-muted">';
+        html += escapeHtml(
+            prefetchJobIds.slice(0, 5).join(", ")
+        );
+        if (prefetchJobIds.length > 5) {
+            html += " +" + (prefetchJobIds.length - 5)
+                + " more";
+        }
+        html += "</small>";
+    }
+    html += "    </div>";
+    html += "  </div>";
+    html += "</div>";
+
+    // Row 4: Periodic Threads summary
+    var pt = data.periodic_threads || {};
+    var ptTotal = pt.total_count || 0;
+    var ptRunning = pt.running_count || 0;
+    var ptActive = pt.active_count || 0;
+
+    if (ptTotal > 0) {
+        html += '<div class="col-12 mt-2 mb-2">';
+        html += '  <h5 class="text-muted">';
+        html += '    <i class="bi bi-arrow-repeat"></i>';
+        html += "    Periodic Threads";
+        html += "  </h5>";
+        html += "</div>";
+
+        html += '<div class="col-md-4 mb-3">';
+        html += '  <div class="card stat-card">';
+        html += '    <div class="card-body">';
+        html += '      <div class="stat-label">';
+        html += "Registered</div>";
+        html += '      <div class="stat-value">';
+        html += ptTotal + "</div>";
+        html += "    </div>";
+        html += "  </div>";
+        html += "</div>";
+
+        html += '<div class="col-md-4 mb-3">';
+        html += '  <div class="card stat-card">';
+        html += '    <div class="card-body">';
+        html += '      <div class="stat-label">';
+        html += "Running</div>";
+        var runColor = ptRunning === ptTotal
+            ? "#198754" : "#ffc107";
+        html += '      <div class="stat-value" style="color:';
+        html += runColor + '">';
+        html += ptRunning + " / " + ptTotal + "</div>";
+        html += "    </div>";
+        html += "  </div>";
+        html += "</div>";
+
+        html += '<div class="col-md-4 mb-3">';
+        html += '  <div class="card stat-card">';
+        html += '    <div class="card-body">';
+        html += '      <div class="stat-label">';
+        html += "Active</div>";
+        var actColor = ptActive === ptRunning
+            ? "#198754" : "#dc3545";
+        html += '      <div class="stat-value" style="color:';
+        html += actColor + '">';
+        html += ptActive + " / " + ptRunning + "</div>";
+        html += "    </div>";
+        html += "  </div>";
+        html += "</div>";
+    }
+
+    // Row 5: Hit Statistics
     html += renderHitStats(data.hit_stats);
 
     container.innerHTML = html;
@@ -597,6 +784,296 @@ function filterJson() {
         return line.toLowerCase().indexOf(term) !== -1;
     });
     el.textContent = filtered.join("\n") || "No matches found";
+}
+
+// ---------------------------------------------------------------
+// Periodic Threads Tab
+// ---------------------------------------------------------------
+var periodicThreadsData = null;
+
+async function refreshPeriodicThreads() {
+    var el = document.getElementById("periodicThreadsContent");
+    try {
+var resp = await fetch(
+            baseUrl + "/periodic-threads"
+        );
+        if (!resp.ok) {
+            throw new Error("HTTP " + resp.status);
+        }
+        periodicThreadsData = await resp.json();
+        renderPeriodicThreads(periodicThreadsData);
+    } catch (err) {
+        el.innerHTML = '<div class="alert alert-danger">'
+            + "Failed to load: " + escapeHtml(err.message)
+            + "</div>";
+    }
+}
+
+function renderPeriodicThreads(data) {
+    var el = document.getElementById("periodicThreadsContent");
+    var summary = data.summary || {};
+    var threads = data.threads || [];
+
+    var html = "";
+
+    // Summary cards
+    html += '<div class="row mb-3">';
+    html += renderMiniCard(
+        "Total", summary.total_count || 0, "bi-layers"
+    );
+    html += renderMiniCard(
+        "Running", summary.running_count || 0,
+        "bi-play-circle", "text-success"
+    );
+    html += renderMiniCard(
+        "Active", summary.active_count || 0,
+        "bi-activity", "text-primary"
+    );
+    html += "</div>";
+
+    // By level breakdown
+    var byLevel = summary.by_level || {};
+    var levelKeys = Object.keys(byLevel);
+    if (levelKeys.length > 0) {
+        html += '<div class="row mb-3">';
+        for (var i = 0; i < levelKeys.length; i++) {
+            var lk = levelKeys[i];
+            var lv = byLevel[lk];
+            html += '<div class="col-md-3 mb-2">';
+            html += '  <div class="card">';
+            html += '    <div class="card-body p-2 text-center">';
+            html += '      <small class="text-muted">';
+            html += escapeHtml(lk.toUpperCase());
+            html += "</small><br>";
+            html += '      <span class="fw-bold">';
+            html += (lv.running || 0) + "/" + (lv.total || 0);
+            html += "</span> running";
+            html += "    </div></div></div>";
+        }
+        html += "</div>";
+    }
+
+    // Thread table
+    if (threads.length > 0) {
+        html += '<table class="table table-sm table-hover">';
+        html += "<thead><tr>";
+        html += '<th>Name</th><th>Level</th>';
+        html += '<th>Status</th><th>Interval</th>';
+        html += '<th>Runs</th><th>Failures</th>';
+        html += '<th>Last Run</th><th>Last Summary</th>';
+        html += "</tr></thead><tbody>";
+        for (var j = 0; j < threads.length; j++) {
+            var t = threads[j];
+            var statusBadge = t.is_running
+                ? (t.is_active
+                    ? '<span class="badge bg-success">' +
+                      'Active</span>'
+                    : '<span class="badge bg-warning">' +
+                      'Stale</span>')
+                : '<span class="badge bg-secondary">' +
+                  'Stopped</span>';
+            html += "<tr>";
+            html += "<td><code>" + escapeHtml(t.name || "")
+                + "</code></td>";
+            html += "<td>" + escapeHtml(t.level || "")
+                + "</td>";
+            html += "<td>" + statusBadge + "</td>";
+            html += "<td>" + (t.interval || "N/A")
+                + "s</td>";
+            html += "<td>" + (t.total_runs || 0) + "</td>";
+            html += "<td>" + (t.total_failures || 0)
+                + "</td>";
+            html += "<td>" + escapeHtml(
+                t.last_run_ago || "never"
+            ) + "</td>";
+            if (t.last_summary) {
+                var s = t.last_summary;
+                var pills = "";
+                if (s.success !== undefined) {
+                    pills += s.success
+                        ? '<span class="badge bg-success me-1">'
+                          + "OK</span>"
+                        : '<span class="badge bg-danger me-1">'
+                          + "FAIL</span>";
+                }
+                if (s.duration_ms !== undefined) {
+                    pills += '<span class="badge bg-info '
+                        + 'text-dark me-1">'
+                        + s.duration_ms.toFixed(1)
+                        + "ms</span>";
+                }
+                if (s.message) {
+                    pills += "<span>"
+                        + escapeHtml(s.message) + "</span>";
+                }
+                var fullJson = JSON.stringify(
+                    s, null, 2
+                );
+                var uid = "summary-" + j;
+                html += "<td>" + pills
+                    + ' <a href="#" class="small" '
+                    + 'data-bs-toggle="collapse" '
+                    + 'data-bs-target="#' + uid + '">'
+                    + "detail</a>"
+                    + '<div class="collapse" id="' + uid
+                    + '"><pre class="mb-0 mt-1" '
+                    + 'style="font-size:.75rem;'
+                    + 'max-height:200px;overflow:auto">'
+                    + escapeHtml(fullJson)
+                    + "</pre></div></td>";
+            } else {
+                html += "<td></td>";
+            }
+            html += "</tr>";
+        }
+        html += "</tbody></table>";
+    } else {
+        html += '<div class="alert alert-info">';
+        html += "No periodic threads registered.";
+        html += "</div>";
+    }
+
+    el.innerHTML = html;
+}
+
+function renderMiniCard(label, value, icon, colorClass) {
+    var cls = colorClass || "";
+    var html = '<div class="col-md-2 mb-2">';
+    html += '  <div class="card text-center">';
+    html += '    <div class="card-body p-2">';
+    html += '      <i class="bi ' + icon + ' ' + cls;
+    html += '"></i><br>';
+    html += '      <span class="fs-5 fw-bold ' + cls + '">';
+    html += value + "</span><br>";
+    html += '      <small class="text-muted">';
+    html += escapeHtml(label) + "</small>";
+    html += "    </div></div></div>";
+    return html;
+}
+
+// ---------------------------------------------------------------
+// Threads Tab
+// ---------------------------------------------------------------
+async function refreshThreads() {
+    var el = document.getElementById("threadsContent");
+    try {
+        el.textContent = "Loading...";
+var resp = await fetch(baseUrl + "/threads");
+        if (!resp.ok) {
+            throw new Error("HTTP " + resp.status);
+        }
+        el.textContent = await resp.text();
+    } catch (err) {
+        el.textContent = "Error: " + err.message;
+    }
+}
+
+// ---------------------------------------------------------------
+// Env Tab
+// ---------------------------------------------------------------
+var envRawText = "";
+
+async function refreshEnv() {
+    var el = document.getElementById("envContent");
+    try {
+        el.textContent = "Loading...";
+var resp = await fetch(baseUrl + "/env");
+        if (!resp.ok) {
+            throw new Error("HTTP " + resp.status);
+        }
+        envRawText = await resp.text();
+        el.textContent = envRawText;
+    } catch (err) {
+        el.textContent = "Error: " + err.message;
+    }
+}
+
+function filterEnv() {
+    var term = document.getElementById("envSearchInput")
+        .value.toLowerCase();
+    var el = document.getElementById("envContent");
+    if (!term || !envRawText) {
+        el.textContent = envRawText;
+        return;
+    }
+    var lines = envRawText.split("\n");
+    var filtered = lines.filter(function(line) {
+        return line.toLowerCase().indexOf(term) !== -1;
+    });
+    el.textContent = filtered.join("\n")
+        || "No matches found";
+}
+
+// ---------------------------------------------------------------
+// Log Level Tab
+// ---------------------------------------------------------------
+var logLevelRawText = "";
+
+async function refreshLogLevel() {
+    var el = document.getElementById("logLevelContent");
+    try {
+        el.textContent = "Loading...";
+var resp = await fetch(baseUrl + "/loglevel");
+        if (!resp.ok) {
+            throw new Error("HTTP " + resp.status);
+        }
+        logLevelRawText = await resp.text();
+        el.textContent = logLevelRawText;
+    } catch (err) {
+        el.textContent = "Error: " + err.message;
+    }
+}
+
+function filterLoggers() {
+    var term = document.getElementById("loggerSearchInput")
+        .value.toLowerCase();
+    var el = document.getElementById("logLevelContent");
+    if (!term || !logLevelRawText) {
+        el.textContent = logLevelRawText;
+        return;
+    }
+    var lines = logLevelRawText.split("\n");
+    var filtered = lines.filter(function(line) {
+        return line.toLowerCase().indexOf(term) !== -1;
+    });
+    el.textContent = filtered.join("\n")
+        || "No matches found";
+}
+
+// ---------------------------------------------------------------
+// Metrics Tab
+// ---------------------------------------------------------------
+var metricsRawText = "";
+
+async function refreshMetrics() {
+    var el = document.getElementById("metricsContent");
+    try {
+        el.textContent = "Loading...";
+var resp = await fetch(baseUrl + "/metrics");
+        if (!resp.ok) {
+            throw new Error("HTTP " + resp.status);
+        }
+        metricsRawText = await resp.text();
+        el.textContent = metricsRawText;
+    } catch (err) {
+        el.textContent = "Error: " + err.message;
+    }
+}
+
+function filterMetrics() {
+    var term = document.getElementById("metricsSearchInput")
+        .value.toLowerCase();
+    var el = document.getElementById("metricsContent");
+    if (!term || !metricsRawText) {
+        el.textContent = metricsRawText;
+        return;
+    }
+    var lines = metricsRawText.split("\n");
+    var filtered = lines.filter(function(line) {
+        return line.toLowerCase().indexOf(term) !== -1;
+    });
+    el.textContent = filtered.join("\n")
+        || "No matches found";
 }
 
 // ---------------------------------------------------------------

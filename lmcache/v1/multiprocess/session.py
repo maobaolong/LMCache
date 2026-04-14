@@ -34,6 +34,12 @@ class Session:
     created_at: float = field(default_factory=time.time)
     total_tokens: int = 0
     retrieved_tokens: int = 0
+    lookup_time: float = 0.0
+    retrieve_time: float = 0.0
+    store_time: float = 0.0
+    lookup_chunks: int = 0
+    retrieve_chunks: int = 0
+    store_chunks: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def set_tokens(self, full_token_ids: list[int]) -> None:
@@ -114,6 +120,18 @@ class SessionManager:
         self._total_requests: int = 0
         self._total_tokens: int = 0
         self._total_retrieved_tokens: int = 0
+
+    def get(self, request_id: str) -> Session | None:
+        """Get an existing session without creating one.
+
+        Args:
+            request_id: Unique request identifier.
+
+        Returns:
+            The Session if it exists, otherwise None.
+        """
+        with self._lock:
+            return self._sessions.get(request_id)
 
     def get_or_create(self, request_id: str) -> Session:
         """Get existing session or create a new one.

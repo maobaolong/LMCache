@@ -47,6 +47,11 @@
                                   class="badge bg-warning">
                                 Connecting...
                             </span>
+                            <span id="versionBadge"
+                                  class="badge bg-light text-dark
+                                         ms-2"
+                                  style="display:none">
+                            </span>
                         </div>
                     </div>
                 </div>
@@ -83,6 +88,52 @@
                         data-bs-target="#gpu"
                         type="button" role="tab">
                     <i class="bi bi-gpu-card"></i> GPU Contexts
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link"
+                        id="periodic-threads-tab"
+                        data-bs-toggle="tab"
+                        data-bs-target="#periodicThreads"
+                        type="button" role="tab">
+                    <i class="bi bi-arrow-repeat"></i>
+                    Periodic Threads
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link"
+                        id="threads-tab"
+                        data-bs-toggle="tab"
+                        data-bs-target="#threads"
+                        type="button" role="tab">
+                    <i class="bi bi-diagram-3"></i> Threads
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link"
+                        id="env-tab"
+                        data-bs-toggle="tab"
+                        data-bs-target="#env"
+                        type="button" role="tab">
+                    <i class="bi bi-gear"></i> Env
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link"
+                        id="loglevel-tab"
+                        data-bs-toggle="tab"
+                        data-bs-target="#loglevel"
+                        type="button" role="tab">
+                    <i class="bi bi-sliders"></i> Log Level
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link"
+                        id="metrics-tab"
+                        data-bs-toggle="tab"
+                        data-bs-target="#metrics"
+                        type="button" role="tab">
+                    <i class="bi bi-graph-up"></i> Metrics
                 </button>
             </li>
             <li class="nav-item" role="presentation">
@@ -138,6 +189,126 @@
                         </span>
                     </div>
                 </div>
+            </div>
+
+            <!-- Periodic Threads Tab -->
+            <div class="tab-pane fade"
+                 id="periodicThreads" role="tabpanel">
+                <div class="d-flex justify-content-between
+                            align-items-center mb-3">
+                    <h3>
+                        <i class="bi bi-arrow-repeat"></i>
+                        Periodic Threads
+                    </h3>
+                    <button class="btn btn-sm btn-outline-primary"
+                            id="refreshPeriodicThreadsBtn">
+                        <i class="bi bi-arrow-clockwise"></i>
+                        Refresh
+                    </button>
+                </div>
+                <div id="periodicThreadsContent">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">
+                            Loading...
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Threads Tab -->
+            <div class="tab-pane fade"
+                 id="threads" role="tabpanel">
+                <div class="d-flex justify-content-between
+                            align-items-center mb-3">
+                    <h3>
+                        <i class="bi bi-diagram-3"></i>
+                        All Threads
+                    </h3>
+                    <button class="btn btn-sm btn-outline-primary"
+                            id="refreshThreadsBtn">
+                        <i class="bi bi-arrow-clockwise"></i>
+                        Refresh
+                    </button>
+                </div>
+                <pre id="threadsContent">Loading...</pre>
+            </div>
+
+            <!-- Env Tab -->
+            <div class="tab-pane fade"
+                 id="env" role="tabpanel">
+                <div class="d-flex justify-content-between
+                            align-items-center mb-3">
+                    <h3>
+                        <i class="bi bi-gear"></i>
+                        Environment Variables
+                    </h3>
+                    <div>
+                        <input type="text"
+                               class="form-control form-control-sm
+                                      d-inline-block"
+                               style="width:200px"
+                               id="envSearchInput"
+                               placeholder="Filter env vars...">
+                        <button class="btn btn-sm btn-outline-primary
+                                       ms-2"
+                                id="refreshEnvBtn">
+                            <i class="bi bi-arrow-clockwise"></i>
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+                <pre id="envContent">Loading...</pre>
+            </div>
+
+            <!-- Log Level Tab -->
+            <div class="tab-pane fade"
+                 id="loglevel" role="tabpanel">
+                <div class="d-flex justify-content-between
+                            align-items-center mb-3">
+                    <h3>
+                        <i class="bi bi-sliders"></i>
+                        Log Levels
+                    </h3>
+                    <button class="btn btn-sm btn-outline-primary"
+                            id="refreshLogLevelBtn">
+                        <i class="bi bi-arrow-clockwise"></i>
+                        Refresh
+                    </button>
+                </div>
+                <div class="mb-3">
+                    <input type="text"
+                           class="form-control form-control-sm"
+                           id="loggerSearchInput"
+                           placeholder="Filter loggers...">
+                </div>
+                <pre id="logLevelContent">Loading...</pre>
+            </div>
+
+            <!-- Metrics Tab -->
+            <div class="tab-pane fade"
+                 id="metrics" role="tabpanel">
+                <div class="d-flex justify-content-between
+                            align-items-center mb-3">
+                    <h3>
+                        <i class="bi bi-graph-up"></i>
+                        Prometheus Metrics
+                    </h3>
+                    <div>
+                        <input type="text"
+                               class="form-control form-control-sm
+                                      d-inline-block"
+                               style="width:200px"
+                               id="metricsSearchInput"
+                               placeholder="Filter metrics...">
+                        <button class="btn btn-sm btn-outline-primary
+                                       ms-2"
+                                id="refreshMetricsBtn">
+                            <i class="bi bi-arrow-clockwise"></i>
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+                <pre id="metricsContent">Loading...</pre>
             </div>
 
             <!-- Raw JSON Tab -->

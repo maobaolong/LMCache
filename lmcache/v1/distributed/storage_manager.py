@@ -7,6 +7,7 @@ Distributed multi-tier storage manager for MP mode
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Literal
+import threading
 import time
 
 # First Party
@@ -115,6 +116,12 @@ class StorageManager:
             max_in_flight=config.prefetch_max_in_flight,
         )
         self._prefetch_controller.start()
+
+        # Cached report_status result with TTL
+        self._status_cache_ttl = config.status_cache_ttl
+        self._status_cache: dict | None = None
+        self._status_cache_ts: float = 0.0
+        self._status_cache_lock = threading.Lock()
 
     # External APIs for serving engine integration code to call
     def reserve_write(
@@ -489,7 +496,40 @@ class StorageManager:
         self._l1_manager.close()
 
     def report_status(self) -> dict:
-        """Return a status dict aggregating all sub-component statuses."""
+        """Return a cached status dict.
+
+        Results are cached for ``status_cache_ttl`` seconds
+        (configurable, default 60 s).  Set TTL to 0 to
+        disable caching.
+        """
+        now = time.monotonic()
+        ttl = self._status_cache_ttl
+        if (
+            ttl > 0
+            and self._status_cache is not None
+            and (now - self._status_cache_ts) < ttl
+        ):
+            return self._status_cache
+
+        with self._status_cache_lock:
+            # Refresh timestamp after acquiring the lock –
+            # the thread may have waited a long time.
+            now = time.monotonic()
+            if (
+                ttl > 0
+                and self._status_cache is not None
+                and (now - self._status_cache_ts) < ttl
+            ):
+                return self._status_cache
+
+            result = self._collect_status()
+            if ttl > 0:
+                self._status_cache = result
+                self._status_cache_ts = now
+            return result
+
+    def _collect_status(self) -> dict:
+        """Collect status from all sub-components."""
         l1 = self._l1_manager.report_status()
         store = self._store_controller.report_status()
         prefetch = self._prefetch_controller.report_status()

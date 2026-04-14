@@ -97,6 +97,10 @@ class StorageManagerConfig:
     prefetch_max_in_flight: int = 8
     """ Maximum number of concurrent prefetch requests. """
 
+    status_cache_ttl: float = 60.0
+    """ TTL in seconds for caching report_status results.
+    Set to 0 to disable caching. """
+
 
 def add_storage_manager_args(
     parser: argparse.ArgumentParser,

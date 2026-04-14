@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from functools import partial
 from itertools import islice
-from typing import Generator
+from typing import Callable, Generator
 import argparse
 import threading
 import time
@@ -63,6 +63,12 @@ from lmcache.v1.multiprocess.protocol import (
 )
 from lmcache.v1.multiprocess.session import SessionManager
 from lmcache.v1.multiprocess.token_hasher import TokenHasher
+from lmcache.v1.periodic_thread import (
+    PeriodicThreadRegistry,
+    ThreadLevel,
+    ThreadRunSummary,
+    create_periodic_thread,
+)
 from lmcache.v1.platform.cache_context import create_cache_context
 import lmcache.c_ops as lmc_ops
 
@@ -171,6 +177,9 @@ class _PendingLookupState:
     job_id: int
     """Prefetch job ID returned by ``lookup()``."""
 
+    created_at: float = 0.0
+    """Monotonic timestamp when this state was created."""
+
 
 # Main class for the mp cache engine
 class MPCacheEngine:
@@ -223,6 +232,17 @@ class MPCacheEngine:
         self._pending_lookups: dict[str, _PendingLookupState] = {}
         self._pending_lookups_lock = threading.Lock()
 
+        # Background TTL scan thread (PeriodicThread)
+        self._stale_cleaners: list[tuple[str, Callable[[], int]]] = []
+        self._scan_thread = create_periodic_thread(
+            name="mp-engine-ttl-scan",
+            interval=self._SCAN_INTERVAL,
+            execute_fn=self._ttl_scan_execute,
+            level=ThreadLevel.MEDIUM,
+            init_wait=self._SCAN_INTERVAL,
+        )
+        self._scan_thread.start()
+
     def register_kv_cache(
         self,
         instance_id: int,
@@ -250,9 +270,19 @@ class MPCacheEngine:
         self.gpu_contexts[instance_id] = gpu_context
         self.gpu_context_meta[instance_id] = (model_name, world_size)
         logger.info(
-            "Registered KV cache for GPU ID %d with %d layers",
+            "Registered KV cache for GPU ID %d: "
+            "layers=%d, block_size=%d, num_blocks=%d, "
+            "is_mla=%s, format=%s, dtype=%s, model=%s, "
+            "world_size=%d",
             instance_id,
             gpu_context.num_layers,
+            gpu_context.block_size,
+            gpu_context.num_blocks,
+            gpu_context.is_mla,
+            gpu_context.gpu_kv_format_name,
+            gpu_context.dtype,
+            model_name,
+            world_size,
         )
 
     def unregister_kv_cache(self, instance_id: int) -> None:
@@ -395,11 +425,28 @@ class MPCacheEngine:
         )
 
         ed = time.perf_counter()
-        if length := len(reserved_dict):
+        elapsed = ed - st
+        session.store_time += elapsed
+        total_chunks = len(obj_keys)
+        stored_chunks = len(reserved_dict)
+        session.store_chunks += stored_chunks
+        skipped_chunks = total_chunks - stored_chunks
+        if stored_chunks:
             logger.info(
-                "Stored %d tokens in %.3f seconds",
-                length * self.chunk_size,
-                ed - st,
+                "STORE[%s]: %d tokens (%d chunks) in %.3fs, skipped=%d, gpu=%s",
+                key.request_id,
+                stored_chunks * self.chunk_size,
+                stored_chunks,
+                elapsed,
+                skipped_chunks,
+                gpu_context.device,
+            )
+        elif skipped_chunks:
+            logger.debug(
+                "STORE[%s]: all %d chunks skipped (already cached), gpu=%s",
+                key.request_id,
+                skipped_chunks,
+                gpu_context.device,
             )
         return event.ipc_handle(), True
 
@@ -569,11 +616,18 @@ class MPCacheEngine:
 
         tokens_retrieved = len(obj_keys) * self.chunk_size
         session.retrieved_tokens += tokens_retrieved
+        session.retrieve_chunks += len(obj_keys)
         ed = time.perf_counter()
+        elapsed = ed - st
+        session.retrieve_time += elapsed
         logger.info(
-            "Retrieved %d tokens in %.3f seconds",
+            "RETRIEVE[%s]: %d tokens (%d chunks) in %.3fs, skip_first_n=%d, gpu=%s",
+            key.request_id,
             tokens_retrieved,
-            ed - st,
+            len(obj_keys),
+            elapsed,
+            skip_first_n_tokens,
+            gpu_context.device,
         )
 
         return event.ipc_handle(), True
@@ -613,6 +667,7 @@ class MPCacheEngine:
         Returns:
             Prefetch job ID for polling via query_prefetch_status.
         """
+        st = time.perf_counter()
         model_name, world_size = key.model_name, key.world_size
 
         # Record total tokens on the session for hit-rate tracking
@@ -691,13 +746,27 @@ class MPCacheEngine:
             extra_count=extra_count,
             external_request_id=key.request_id,
         )
-        return self._register_prefetch_job(
+        job_id = self._register_prefetch_job(
             _PrefetchJob(
                 handle=handle,
                 world_size=key.world_size,
                 request_id=key.request_id,
             )
         )
+        elapsed = time.perf_counter() - st
+        session.lookup_time += elapsed
+        session.lookup_chunks += len(obj_keys)
+        logger.info(
+            "LOOKUP[%s]: %d chunks submitted in %.3fs, "
+            "job_id=%d, model=%s, world_size=%d",
+            key.request_id,
+            len(obj_keys),
+            elapsed,
+            job_id,
+            model_name,
+            world_size,
+        )
+        return job_id
 
     def _register_prefetch_job(self, job: _PrefetchJob) -> int:
         with self._prefetch_job_lock:
@@ -763,6 +832,7 @@ class MPCacheEngine:
             )
             return None
 
+        st = time.perf_counter()
         found_count = self.storage_manager.query_prefetch_status(job.handle)
         if found_count is None:
             return None
@@ -779,6 +849,12 @@ class MPCacheEngine:
                 session_id=job.request_id,
                 metadata={"found_count": found_count},
             )
+        )
+        logger.info(
+            "QUERY_PREFETCH[job=%d]: found=%d in %.3fs",
+            prefetch_job_id,
+            found_count,
+            time.perf_counter() - st,
         )
 
         return found_count
@@ -844,6 +920,7 @@ class MPCacheEngine:
         """
         # NOTE: lookup() already publishes MP_LOOKUP_PREFETCH_START,
         # so we do not emit it here to avoid duplicate events.
+        st = time.perf_counter()
 
         # Step 1: submit to the existing background prefetch loop
         job_id = self.lookup(key, tp_size)
@@ -866,6 +943,7 @@ class MPCacheEngine:
             with self._pending_lookups_lock:
                 self._pending_lookups[key.request_id] = _PendingLookupState(
                     job_id=job_id,
+                    created_at=time.monotonic(),
                 )
         else:
             # No hits — no RETRIEVE will be issued. Clean up the
@@ -879,10 +957,11 @@ class MPCacheEngine:
                 self.storage_manager.query_prefetch_status(job.handle, pop=True)
 
         logger.info(
-            "SYNC_LOOKUP[%s]: found_count=%d, world_size=%d",
+            "SYNC_LOOKUP[%s]: found_count=%d, world_size=%d, elapsed=%.3fs",
             key.request_id,
             found_count,
             key.world_size,
+            time.perf_counter() - st,
         )
 
         return found_count
@@ -947,6 +1026,36 @@ class MPCacheEngine:
         Args:
             request_id: The request ID whose session should be removed.
         """
+        st = time.perf_counter()
+        session = self.session_manager.get(request_id)
+        if session is None:
+            logger.warning(
+                "END_SESSION[%s]: session not found, skipping",
+                request_id,
+            )
+            return
+        hit_rate = (
+            round(session.retrieved_tokens / session.total_tokens, 4)
+            if session.total_tokens > 0
+            else 0.0
+        )
+        logger.info(
+            "END_SESSION[%s]: total_tokens=%d, "
+            "retrieved_tokens=%d, hit_rate=%.2f%%, "
+            "lookup=%d chunks/%.3fs, "
+            "retrieve=%d chunks/%.3fs, "
+            "store=%d chunks/%.3fs",
+            request_id,
+            session.total_tokens,
+            session.retrieved_tokens,
+            hit_rate * 100,
+            session.lookup_chunks,
+            session.lookup_time,
+            session.retrieve_chunks,
+            session.retrieve_time,
+            session.store_chunks,
+            session.store_time,
+        )
         self._event_bus.publish(
             Event(
                 event_type=EventType.MP_VLLM_END_SESSION,
@@ -966,6 +1075,11 @@ class MPCacheEngine:
         # Clean up pending lookup state (SYNC_LOOKUP path)
         with self._pending_lookups_lock:
             self._pending_lookups.pop(request_id, None)
+        logger.info(
+            "END_SESSION[%s]: cleanup completed in %.3fs",
+            request_id,
+            time.perf_counter() - st,
+        )
 
     def report_status(self) -> dict:
         """Return a status dict for the entire cache engine."""
@@ -996,6 +1110,16 @@ class MPCacheEngine:
 
         hit_stats = self.session_manager.report_hit_stats()
 
+        # Prefetch job details for debugging stale/stuck jobs
+        with self._prefetch_job_lock:
+            prefetch_job_ids = list(self._prefetch_jobs.keys())
+            pending_request_ids = list(self._request_to_job_id.keys())
+
+        with self._pending_lookups_lock:
+            pending_lookup_request_ids = list(self._pending_lookups.keys())
+
+        registry = PeriodicThreadRegistry.get_instance()
+
         return {
             "is_healthy": sm["is_healthy"],
             "engine_type": self.__class__.__name__,
@@ -1004,9 +1128,15 @@ class MPCacheEngine:
             "registered_gpu_ids": list(self.gpu_contexts.keys()),
             "gpu_context_meta": gpu_context_meta,
             "active_sessions": self.session_manager.active_count(),
-            "active_prefetch_jobs": len(self._prefetch_jobs),
+            "active_prefetch_jobs": len(prefetch_job_ids),
+            "prefetch_job_ids": prefetch_job_ids[:50],
+            "pending_request_ids": pending_request_ids[:50],
+            "pending_lookup_count": len(pending_lookup_request_ids),
+            "pending_lookup_request_ids": (pending_lookup_request_ids[:50]),
+            "next_prefetch_job_id": self._next_prefetch_job_id,
             "hit_stats": hit_stats,
             "storage_manager": sm,
+            "periodic_threads": registry.get_summary(),
         }
 
     def report_block_allocations(self, records: list[BlockAllocationRecord]) -> None:
@@ -1030,15 +1160,21 @@ class MPCacheEngine:
         """
         Clears all stored KV cache data from the storage manager.
         """
+        logger.info("CLEAR: clearing all stored KV cache data")
         with self.lock:
             self.storage_manager.memcheck()
             self.storage_manager.clear(force=True)
             self.storage_manager.memcheck()
+        logger.info("CLEAR: completed")
 
     def close(self) -> None:
         """
         Closes the MPCacheEngine and releases all resources.
         """
+        # Stop TTL scan thread and unregister from registry
+        self._scan_thread.stop()
+        PeriodicThreadRegistry.get_instance().unregister(self._scan_thread.name)
+
         # Close storage manager
         self.storage_manager.close()
         logger.info("MPCacheEngine closed")
@@ -1046,14 +1182,195 @@ class MPCacheEngine:
         # Release GPU contexts
         self.gpu_contexts.clear()
 
+    # -----------------------------------------------------------------
+    # Background TTL scan
+    # -----------------------------------------------------------------
+
+    _SCAN_INTERVAL: float = 60.0  # seconds between scans
+    _STALE_TTL: float = 300.0  # 5 minutes
+
+    def register_stale_cleaner(
+        self,
+        name: str,
+        cleaner: Callable[[], int],
+    ) -> None:
+        """Register an external cleanup callback.
+
+        Args:
+            name: Human-readable label for logging.
+            cleaner: Callable returning the number of entries
+                cleaned.
+        """
+        self._stale_cleaners.append((name, cleaner))
+
+    def _ttl_scan_execute(self) -> ThreadRunSummary:
+        """Execute all registered stale cleaners.
+
+        Returns:
+            ThreadRunSummary with cleanup statistics.
+        """
+        total = 0
+        total += self.session_manager.cleanup_expired()
+        total += self._cleanup_stale_jobs()
+        failed_cleaners: list[str] = []
+        for name, cleaner in self._stale_cleaners:
+            try:
+                n = cleaner()
+                total += n
+            except Exception:
+                logger.exception("TTL scan: error in cleaner %s", name)
+                failed_cleaners.append(name)
+        if total:
+            logger.info("TTL scan: cleaned %d stale entries", total)
+        return ThreadRunSummary(
+            success=len(failed_cleaners) == 0,
+            message="cleaned %d entries" % total
+            if not failed_cleaners
+            else "errors in: %s" % ", ".join(failed_cleaners),
+            extra_info={
+                "cleaned_total": str(total),
+                "failed_cleaners": str(len(failed_cleaners)),
+            },
+        )
+
+    def _cleanup_stale_jobs(self) -> int:
+        """Remove prefetch jobs and pending lookups older than
+        *_STALE_TTL* seconds.
+
+        Returns:
+            Number of entries removed.
+        """
+        now = time.monotonic()
+        cutoff = now - self._STALE_TTL
+        cleaned = 0
+
+        # Stale prefetch jobs
+        with self._prefetch_job_lock:
+            stale_ids = [
+                jid
+                for jid, job in self._prefetch_jobs.items()
+                if job.handle.submit_time < cutoff
+            ]
+            for jid in stale_ids:
+                job = self._prefetch_jobs.pop(jid)
+                self._request_to_job_id.pop(job.request_id, None)
+                cleaned += 1
+                logger.warning(
+                    "Cleaned stale prefetch job %d (request=%s, age=%.0fs)",
+                    jid,
+                    job.request_id,
+                    now - job.handle.submit_time,
+                )
+
+        # Stale pending lookups
+        with self._pending_lookups_lock:
+            stale_reqs = [
+                rid
+                for rid, st in self._pending_lookups.items()
+                if st.created_at < cutoff
+            ]
+            for rid in stale_reqs:
+                self._pending_lookups.pop(rid, None)
+                cleaned += 1
+                logger.warning(
+                    "Cleaned stale pending lookup (request=%s)",
+                    rid,
+                )
+
+        return cleaned
+
     def _setup_metrics(self) -> None:
         """Register OTel observable gauges for MP engine metrics."""
         _gauge = partial(register_gauge, "lmcache.mp_engine")
+
+        # -- Engine-level gauges --
         _gauge(
             "lmcache_mp.active_prefetch_jobs",
             "Number of active prefetch jobs",
             lambda: len(self._prefetch_jobs),
         )
+        _gauge(
+            "lmcache_mp.active_sessions",
+            "Number of active sessions",
+            lambda: self.session_manager.active_count(),
+        )
+        _gauge(
+            "lmcache_mp.registered_gpu_count",
+            "Number of registered GPU contexts",
+            lambda: len(self.gpu_contexts),
+        )
+        _gauge(
+            "lmcache_mp.pending_lookups",
+            "Number of pending sync lookup states",
+            lambda: len(self._pending_lookups),
+        )
+
+        # -- L1 memory gauges (via StorageManager) --
+        _gauge(
+            "lmcache_mp.l1_memory_used_bytes",
+            "L1 CPU cache memory used in bytes",
+            lambda: self._get_l1_status("memory_used_bytes", 0),
+        )
+        _gauge(
+            "lmcache_mp.l1_memory_total_bytes",
+            "L1 CPU cache total memory in bytes",
+            lambda: self._get_l1_status("memory_total_bytes", 0),
+        )
+        _gauge(
+            "lmcache_mp.l1_memory_usage_ratio",
+            "L1 CPU cache memory usage ratio (0.0-1.0)",
+            lambda: self._get_l1_status("memory_usage_ratio", 0.0),
+        )
+        _gauge(
+            "lmcache_mp.l1_total_object_count",
+            "Total number of objects in L1 cache",
+            lambda: self._get_l1_status("total_object_count", 0),
+        )
+        _gauge(
+            "lmcache_mp.l1_write_locked_count",
+            "Number of write-locked objects in L1",
+            lambda: self._get_l1_status("write_locked_count", 0),
+        )
+        _gauge(
+            "lmcache_mp.l1_read_locked_count",
+            "Number of read-locked objects in L1",
+            lambda: self._get_l1_status("read_locked_count", 0),
+        )
+
+        # -- Prefetch controller gauges --
+        _gauge(
+            "lmcache_mp.prefetch_submission_queue_size",
+            "Prefetch controller submission queue size",
+            lambda: self._get_prefetch_status("submission_queue_size", 0),
+        )
+        _gauge(
+            "lmcache_mp.prefetch_in_flight_count",
+            "Prefetch controller in-flight request count",
+            lambda: self._get_prefetch_status("in_flight_request_count", 0),
+        )
+
+        # -- Hit rate gauge --
+        _gauge(
+            "lmcache_mp.cumulative_hit_rate",
+            "Cumulative token-level hit rate (0.0-1.0)",
+            lambda: self.session_manager.report_hit_stats().get("hit_rate", 0.0),
+        )
+
+    def _get_l1_status(self, key: str, default: int | float):
+        """Helper to safely read a field from L1 manager status."""
+        try:
+            sm = self.storage_manager.report_status()
+            return sm.get("l1_manager", {}).get(key, default)
+        except Exception:
+            return default
+
+    def _get_prefetch_status(self, key: str, default: int | float):
+        """Helper to safely read a field from prefetch controller."""
+        try:
+            sm = self.storage_manager.report_status()
+            return sm.get("prefetch_controller", {}).get(key, default)
+        except Exception:
+            return default
 
 
 def add_handler_helper(
@@ -1103,6 +1420,19 @@ def run_cache_server(
         chunk_size=mp_config.chunk_size,
         hash_algorithm=mp_config.hash_algorithm,
     )
+
+    # Register external stale cleaners from observability subscribers
+    # First Party
+    from lmcache.v1.mp_observability.subscribers.metrics.mp_engine import (
+        MPEngineMetricsSubscriber,
+    )
+
+    metrics_sub = event_bus.find_subscriber(MPEngineMetricsSubscriber)
+    if metrics_sub is not None:
+        engine.register_stale_cleaner(
+            "MPEngineMetricsSubscriber",
+            metrics_sub.cleanup_stale,
+        )
 
     # Initialize the message queue server
     context = zmq.Context.instance()

@@ -265,3 +265,32 @@ pre {
 .refreshing {
     animation: spin 1s linear infinite;
 }
+
+/* Periodic threads table */
+.table-hover tbody tr:hover {
+    background-color: #e8f4fd;
+}
+
+.table code {
+    font-size: 0.85rem;
+    color: #0d6efd;
+    background-color: #f0f6ff;
+    padding: 0.1em 0.4em;
+    border-radius: 0.25rem;
+}
+
+/* Pre blocks for env/threads/metrics/loglevel */
+#envContent, #threadsContent,
+#metricsContent, #logLevelContent {
+    max-height: 600px;
+    overflow-y: auto;
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+
+/* Tab badge for counts */
+.nav-link .tab-badge {
+    font-size: 0.7rem;
+    vertical-align: super;
+    margin-left: 0.25rem;
+}

@@ -80,6 +80,7 @@ def storage_manager_no_l2(basic_l1_config):
     config = StorageManagerConfig(
         l1_manager_config=basic_l1_config,
         eviction_config=EvictionConfig(eviction_policy="LRU"),
+        status_cache_ttl=0,
     )
     sm = StorageManager(config)
     yield sm
@@ -92,6 +93,7 @@ def storage_manager_with_l2(basic_l1_config):
     config = StorageManagerConfig(
         l1_manager_config=basic_l1_config,
         eviction_config=EvictionConfig(eviction_policy="LRU"),
+        status_cache_ttl=0,
         l2_adapter_config=L2AdaptersConfig(
             adapters=[
                 MockL2AdapterConfig(

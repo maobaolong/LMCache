@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 import collections
 import threading
 import time
@@ -62,6 +62,9 @@ class EventBusConfig:
 # ---------------------------------------------------------------------------
 # Subscriber ABC
 # ---------------------------------------------------------------------------
+
+
+_T = TypeVar("_T", bound="EventSubscriber")
 
 
 class EventSubscriber(ABC):
@@ -129,6 +132,24 @@ class EventBus:
         subscriber.register(self)
         with self._lock:
             self._registered_subscribers.append(subscriber)
+
+    def find_subscriber(
+        self,
+        cls: type[_T],
+    ) -> _T | None:
+        """Find a registered subscriber by type.
+
+        Args:
+            cls: The subscriber class to search for.
+
+        Returns:
+            The first matching subscriber, or None.
+        """
+        with self._lock:
+            for sub in self._registered_subscribers:
+                if isinstance(sub, cls):
+                    return sub
+        return None
 
     def publish_on_stream(self, stream: Any, event: Event) -> None:
         """Schedule event recording as a CUDA host function on *stream*.
