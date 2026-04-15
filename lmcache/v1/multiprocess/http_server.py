@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import argparse
 import asyncio
+import os
 
 # Third Party
 from fastapi import FastAPI
@@ -130,19 +131,32 @@ def run_http_server(
     _configs["storage_manager"] = storage_manager_config
     _configs["observability"] = obs_config
 
-    config = uvicorn.Config(
-        app=app,
-        host=http_config.http_host,
-        port=http_config.http_port,
-        log_level="info",
-        access_log=True,
-    )
-    server = uvicorn.Server(config)
+    uvicorn_kwargs: dict = {
+        "app": app,
+        "log_level": "info",
+        "access_log": True,
+    }
+
+    socket_path = http_config.http_socket_path
+    if socket_path:
+        uvicorn_kwargs["uds"] = socket_path
+        os.makedirs(os.path.dirname(socket_path), exist_ok=True)
+        if os.path.exists(socket_path):
+            os.unlink(socket_path)
+        server_log_info = "socket %s" % socket_path
+    else:
+        uvicorn_kwargs["host"] = http_config.http_host
+        uvicorn_kwargs["port"] = http_config.http_port
+        server_log_info = "http://%s:%d" % (
+            http_config.http_host,
+            http_config.http_port,
+        )
+
+    server = uvicorn.Server(uvicorn.Config(**uvicorn_kwargs))
 
     logger.info(
-        "Starting LMCache HTTP server on http://%s:%d",
-        http_config.http_host,
-        http_config.http_port,
+        "Starting LMCache HTTP server on %s",
+        server_log_info,
     )
     asyncio.run(server.serve())
 

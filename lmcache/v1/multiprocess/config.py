@@ -6,6 +6,7 @@ Configuration for the multiprocess (ZMQ) server and HTTP frontend.
 
 # Standard
 from dataclasses import dataclass, field
+from typing import Optional
 import argparse
 
 
@@ -48,6 +49,9 @@ class MPServerConfig:
 DEFAULT_MP_SERVER_CONFIG = MPServerConfig()
 
 
+_DEFAULT_HTTP_SOCKET_PATH = "/tmp/lmcache_http_server/socket"
+
+
 @dataclass
 class HTTPFrontendConfig:
     """Configuration for the HTTP frontend (uvicorn/FastAPI)."""
@@ -57,6 +61,10 @@ class HTTPFrontendConfig:
 
     http_port: int = 8080
     """HTTP server port."""
+
+    http_socket_path: Optional[str] = _DEFAULT_HTTP_SOCKET_PATH
+    """Unix domain socket path. If set, the server uses
+    a UDS instead of TCP host:port."""
 
 
 DEFAULT_HTTP_FRONTEND_CONFIG = HTTPFrontendConfig()
@@ -199,6 +207,16 @@ def add_http_frontend_args(
         default=8080,
         help="Port to bind the HTTP server. Default is 8080.",
     )
+    http_group.add_argument(
+        "--http-socket-path",
+        type=str,
+        help=(
+            "Unix domain socket path. If set, the server "
+            "uses a UDS instead of TCP host:port. "
+            "Set to empty string to disable. "
+            "Default is not set."
+        ),
+    )
     return parser
 
 
@@ -214,7 +232,9 @@ def parse_args_to_http_frontend_config(
     Returns:
         HTTPFrontendConfig: The configuration object.
     """
+    socket_path = getattr(args, "http_socket_path", None)
     return HTTPFrontendConfig(
         http_host=args.http_host,
         http_port=args.http_port,
+        http_socket_path=socket_path or None,
     )
