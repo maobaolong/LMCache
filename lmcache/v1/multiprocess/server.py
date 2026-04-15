@@ -672,6 +672,8 @@ class MPCacheEngine:
 
         # Record total tokens on the session for hit-rate tracking
         session = self.session_manager.get_or_create(key.request_id)
+        session.set_tokens(list(key.token_ids))
+        session.lookup_ipc_key = key
         session.total_tokens = len(key.token_ids)
 
         self._event_bus.publish(
@@ -737,11 +739,6 @@ class MPCacheEngine:
                 },
             )
         )
-
-        # set lookup ipc key, for session manager to use and generate object keys
-        session = self.session_manager.get_or_create(key.request_id)
-        session.set_tokens(list(key.token_ids))
-        session.lookup_ipc_key = key
 
         obj_keys = ipc_key_to_object_keys(key, chunk_hashes)
 
