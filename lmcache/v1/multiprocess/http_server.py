@@ -75,6 +75,7 @@ async def lifespan(app: FastAPI):
         obs_config=_configs["observability"],
         return_engine=True,
         start_prometheus_http_server=False,
+        http_frontend_config=_configs.get("http_frontend"),
     )
     assert result is not None, "run_cache_server returned None with return_engine=True"
     zmq_server, engine, plugin_launcher = result
@@ -130,6 +131,8 @@ def run_http_server(
     _configs["mp"] = mp_config
     _configs["storage_manager"] = storage_manager_config
     _configs["observability"] = obs_config
+    _configs["http_frontend"] = http_config
+    app.state.configs = _configs
 
     uvicorn_kwargs: dict = {
         "app": app,

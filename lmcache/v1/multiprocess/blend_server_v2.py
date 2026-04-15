@@ -757,6 +757,7 @@ def run_cache_server(
     obs_config: ObservabilityConfig,
     return_engine: bool = False,
     start_prometheus_http_server: bool = True,
+    http_frontend_config=None,
 ):
     """
     Run the LMCache cache server with ZMQ message queue.
@@ -867,9 +868,9 @@ def run_cache_server(
 
     # Launch runtime plugins if configured
     plugin_launcher = None
-    if mp_config.runtime_plugin_locations:
+    if mp_config.runtime_plugin_config.locations:
         plugin_launcher = MPRuntimePluginLauncher(
-            runtime_plugin_locations=(mp_config.runtime_plugin_locations),
+            runtime_plugin_config=mp_config.runtime_plugin_config,
             mp_config=mp_config,
             storage_manager_config=storage_manager_config,
             obs_config=obs_config,

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import Any
+import json
 
 # Third Party
 from fastapi import APIRouter, Request
@@ -9,7 +10,19 @@ from fastapi.responses import JSONResponse
 router = APIRouter()
 
 
+class IndentedJSONResponse(JSONResponse):
+    """JSONResponse with indented output for readability."""
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+
+
 @router.get("/api/status")
+@router.get("/inference_info")
 async def status(request: Request) -> Any:
     """
     Detailed status endpoint for inspecting internal state
@@ -22,4 +35,6 @@ async def status(request: Request) -> Any:
             status_code=503,
             content={"error": "engine not initialized"},
         )
-    return engine.report_status()
+    return IndentedJSONResponse(
+        content=engine.report_status(),
+    )
