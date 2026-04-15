@@ -241,6 +241,15 @@ def add_storage_manager_args(
         help="Maximum number of concurrent prefetch requests. Default is 8.",
     )
 
+    # Status cache
+    parser.add_argument(
+        "--status-cache-ttl",
+        type=float,
+        default=60.0,
+        help="TTL in seconds for caching report_status results. "
+        "Set to 0 to disable caching. Default is 60.",
+    )
+
     # Adapter config
     add_l2_adapters_args(parser)
     return parser
@@ -304,6 +313,7 @@ def parse_args_to_config(
         store_policy=args.l2_store_policy,
         prefetch_policy=args.l2_prefetch_policy,
         prefetch_max_in_flight=args.l2_prefetch_max_in_flight,
+        status_cache_ttl=args.status_cache_ttl,
     )
 
 

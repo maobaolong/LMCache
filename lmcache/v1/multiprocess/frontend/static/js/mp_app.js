@@ -269,7 +269,6 @@ function renderOverview(data) {
     html += "</div>";
 
     // Row 3: Prefetch & Pending
-    var activePrefetch = data.active_prefetch_jobs || 0;
     var pendingLookups = data.pending_lookup_count || 0;
     var nextJobId = data.next_prefetch_job_id || 0;
 
@@ -280,20 +279,33 @@ function renderOverview(data) {
     html += "  </h5>";
     html += "</div>";
 
-    html += '<div class="col-md-3 mb-3">';
+    // Prefetch jobs: count + ID list in one card
+    var prefetchJobIds = data.prefetch_job_ids || [];
+    html += '<div class="col-md-4 mb-3">';
     html += '  <div class="card stat-card">';
     html += '    <div class="card-body">';
     html += '      <div class="stat-label">';
     html += "Active Prefetch Jobs</div>";
     html += '      <div class="stat-value">';
-    html += activePrefetch + "</div>";
-    html += '      <small class="text-muted">next ID: ';
-    html += nextJobId + "</small>";
+    html += prefetchJobIds.length + "</div>";
+    html += '      <small class="text-muted">';
+    html += "next ID: " + nextJobId;
+    if (prefetchJobIds.length > 0) {
+        html += " &middot; IDs: ";
+        html += escapeHtml(
+            prefetchJobIds.slice(0, 5).join(", ")
+        );
+        if (prefetchJobIds.length > 5) {
+            html += " +" + (prefetchJobIds.length - 5)
+                + " more";
+        }
+    }
+    html += "</small>";
     html += "    </div>";
     html += "  </div>";
     html += "</div>";
 
-    html += '<div class="col-md-3 mb-3">';
+    html += '<div class="col-md-4 mb-3">';
     html += '  <div class="card stat-card">';
     html += '    <div class="card-body">';
     html += '      <div class="stat-label">';
@@ -307,7 +319,7 @@ function renderOverview(data) {
     // Pending request IDs (collapsed list)
     var pendingReqIds = data.pending_request_ids || [];
     var pendingLookupIds = data.pending_lookup_request_ids || [];
-    html += '<div class="col-md-3 mb-3">';
+    html += '<div class="col-md-4 mb-3">';
     html += '  <div class="card stat-card">';
     html += '    <div class="card-body">';
     html += '      <div class="stat-label">';
@@ -321,30 +333,6 @@ function renderOverview(data) {
         );
         if (pendingReqIds.length > 3) {
             html += " +" + (pendingReqIds.length - 3)
-                + " more";
-        }
-        html += "</small>";
-    }
-    html += "    </div>";
-    html += "  </div>";
-    html += "</div>";
-
-    // Prefetch job IDs
-    var prefetchJobIds = data.prefetch_job_ids || [];
-    html += '<div class="col-md-3 mb-3">';
-    html += '  <div class="card stat-card">';
-    html += '    <div class="card-body">';
-    html += '      <div class="stat-label">';
-    html += "Prefetch Job IDs</div>";
-    html += '      <div class="stat-value">';
-    html += prefetchJobIds.length + "</div>";
-    if (prefetchJobIds.length > 0) {
-        html += '      <small class="text-muted">';
-        html += escapeHtml(
-            prefetchJobIds.slice(0, 5).join(", ")
-        );
-        if (prefetchJobIds.length > 5) {
-            html += " +" + (prefetchJobIds.length - 5)
                 + " more";
         }
         html += "</small>";
