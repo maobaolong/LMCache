@@ -20,6 +20,11 @@ from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.mp_observability.event import Event, EventType
 from lmcache.v1.mp_observability.event_bus import get_event_bus
 
+try:
+    from lmcache.v1.distributed.abo.compressed_memory_obj import CompressedMemoryObj
+except ImportError:
+    CompressedMemoryObj = None
+
 logger = init_logger(__name__)
 
 
@@ -162,7 +167,7 @@ class L1Manager:
 
         self._objects: dict[ObjectKey, L1ObjectState] = {}
 
-        self._memory_manager = L1MemoryManager(config.memory_config)
+        self._memory_manager = self._create_memory_manager(config)
 
         self._write_ttl_seconds = config.write_ttl_seconds
         self._read_ttl_seconds = config.read_ttl_seconds
@@ -170,6 +175,10 @@ class L1Manager:
         self._registered_listeners: list[L1ManagerListener] = []
 
         self._event_bus = get_event_bus()
+
+    def _create_memory_manager(self, config: L1ManagerConfig) -> L1MemoryManager:
+        """Factory method: create L1MemoryManager. Subclasses may override."""
+        return L1MemoryManager(config.memory_config)
 
     def register_listener(self, listener: L1ManagerListener) -> None:
         """Register a listener for L1Manager events.
@@ -638,6 +647,15 @@ class L1Manager:
                 continue
 
             if entry.read_lock.is_locked() or entry.write_lock.is_locked():
+                ret[key] = L1Error.KEY_IS_LOCKED
+                continue
+
+            # ABO: skip if async compress/decompress/H2D is in progress
+            if (
+                CompressedMemoryObj is not None
+                and isinstance(entry.memory_obj, CompressedMemoryObj)
+                and entry.memory_obj.has_staging
+            ):
                 ret[key] = L1Error.KEY_IS_LOCKED
                 continue
 

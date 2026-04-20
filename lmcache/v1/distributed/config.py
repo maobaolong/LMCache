@@ -10,6 +10,11 @@ from typing import Literal
 import argparse
 
 # First Party
+from lmcache.v1.distributed.abo.abo_codec import (
+    ABOConfig,
+    add_abo_args,
+    parse_args_to_abo_config,
+)
 from lmcache.v1.distributed.l2_adapters.config import (
     L2AdaptersConfig,
     add_l2_adapters_args,
@@ -96,6 +101,9 @@ class StorageManagerConfig:
 
     prefetch_max_in_flight: int = 8
     """ Maximum number of concurrent prefetch requests. """
+
+    abo_config: ABOConfig = field(default_factory=ABOConfig)
+    """ ABO KV compression configuration. """
 
     status_cache_ttl: float = 60.0
     """ TTL in seconds for caching report_status results.
@@ -250,6 +258,9 @@ def add_storage_manager_args(
         "Set to 0 to disable caching. Default is 60.",
     )
 
+    # ABO compression configuration
+    add_abo_args(parser)
+
     # Adapter config
     add_l2_adapters_args(parser)
     return parser
@@ -304,6 +315,8 @@ def parse_args_to_config(
         eviction_ratio=args.eviction_ratio,
     )
 
+    abo_config = parse_args_to_abo_config(args)
+
     l2_adapter_config = parse_args_to_l2_adapters_config(args)
 
     return StorageManagerConfig(
@@ -314,6 +327,7 @@ def parse_args_to_config(
         prefetch_policy=args.l2_prefetch_policy,
         prefetch_max_in_flight=args.l2_prefetch_max_in_flight,
         status_cache_ttl=args.status_cache_ttl,
+        abo_config=abo_config,
     )
 
 

@@ -63,10 +63,10 @@ class PrefetchHandle:
 
 class StorageManager:
     def __init__(self, config: StorageManagerConfig):
-        self._l1_manager = L1Manager(config.l1_manager_config)
+        self._l1_manager = self._create_l1_manager(config)
         self._event_bus = get_event_bus()
 
-        # L1 eviction controller
+        # Eviction controller
         self._eviction_controller = L1EvictionController(
             l1_manager=self._l1_manager,
             eviction_config=config.eviction_config,
@@ -346,6 +346,11 @@ class StorageManager:
             )
         )
 
+        if hit_count > 0:
+            self._on_prefetch_l1_hits(
+                l1_read_result, keys[:hit_count], extra_count=extra_count
+            )
+
         # Submit remaining keys to L2 prefetch controller
         remaining_keys = keys[hit_count:]
         prefetch_request_id = -1
@@ -557,6 +562,19 @@ class StorageManager:
             "l2_adapters": adapters,
             "num_l2_adapters": len(self._l2_adapters),
         }
+
+    def _create_l1_manager(self, config: StorageManagerConfig) -> L1Manager:
+        """Factory method: create L1Manager. Subclasses may override."""
+        return L1Manager(config.l1_manager_config)
+
+    def _on_prefetch_l1_hits(
+        self,
+        l1_read_result: dict[ObjectKey, tuple[L1Error, MemoryObj | None]],
+        l1_hit_keys: list[ObjectKey],
+        extra_count: int = 0,
+    ) -> None:
+        """Hook called when L1 prefix hits are found during prefetch.
+        Subclasses may override (e.g. ABO early decompress)."""
 
     # Functions for debugging and testing
     def memcheck(self) -> bool:

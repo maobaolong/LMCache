@@ -72,6 +72,13 @@ from lmcache.v1.periodic_thread import (
 from lmcache.v1.platform.cache_context import create_cache_context
 import lmcache.c_ops as lmc_ops
 
+try:
+    from lmcache.v1.distributed.abo.abo_storage_manager import (
+        ABOStorageManager,
+    )
+except ImportError:
+    ABOStorageManager = None
+
 logger = init_logger(__name__)
 
 
@@ -205,7 +212,8 @@ class MPCacheEngine:
         self.lock = threading.Lock()
 
         # storage manager
-        self.storage_manager = StorageManager(storage_manager_config)
+        self._abo_enabled = storage_manager_config.abo_config.enable
+        self.storage_manager = self._create_storage_manager(storage_manager_config)
 
         # Token hasher and session manager for token-based operations
         self.token_hasher = TokenHasher(
@@ -284,6 +292,11 @@ class MPCacheEngine:
             model_name,
             world_size,
         )
+
+        # Eagerly initialize ABO staging pool on first register
+        if self._abo_enabled and isinstance(self.storage_manager, ABOStorageManager):
+            layout_desc = get_layout_desc(gpu_context, self.chunk_size)
+            self.storage_manager.init_staging_pool(layout_desc)
 
     def unregister_kv_cache(self, instance_id: int) -> None:
         """
@@ -400,10 +413,22 @@ class MPCacheEngine:
                         gpu_context.gpu_kv_format_,
                         0,
                     )
+                # ABO: mark as needing compress before D2H (STORE path only)
+                if self._abo_enabled:
+                    memory_obj._need_compress = True
+
                 # Store is not batched, so we always use chunk_idx=0 (single slot)
                 lmcache_memcpy_async_d2h(
                     gpu_context.get_tmp_gpu_buffer_flat(chunk_idx=0), memory_obj
                 )
+
+                # ABO: per-chunk event + async compress trigger
+                if self._abo_enabled:
+                    d2h_event = torch.cuda.Event()
+                    d2h_event.record()
+                    self.storage_manager.abo_compress_manager.submit_per_chunk_compress(
+                        d2h_event, obj_key, memory_obj
+                    )
 
             event.record()
 
@@ -546,11 +571,40 @@ class MPCacheEngine:
 
                 # Copy from CPU to GPU tmp buffers, then scatter to paged KV — per group
                 # H2D copy: each memory_obj maps to its own batch slot
-                for chunk_idx, memory_obj in enumerate(memory_obj_batch):
-                    lmcache_memcpy_async_h2d(
-                        memory_obj,
-                        gpu_context.get_tmp_gpu_buffer_flat(chunk_idx=chunk_idx),
-                    )
+                if self._abo_enabled:
+                    # ABO path: try/except/finally to guarantee staging release
+                    # release_staging is scheduled on a separate release_stream
+                    # via event sync to avoid blocking H2D stream
+                    _h2d_error: Exception | None = None
+                    for chunk_idx, memory_obj in enumerate(memory_obj_batch):
+                        try:
+                            if _h2d_error is not None:
+                                continue
+                            lmcache_memcpy_async_h2d(
+                                memory_obj,
+                                gpu_context.get_tmp_gpu_buffer_flat(
+                                    chunk_idx=chunk_idx
+                                ),
+                            )
+                        except Exception as e:
+                            if _h2d_error is None:
+                                _h2d_error = e
+                        finally:
+                            # Record event on H2D stream
+                            h2d_event = torch.cuda.Event()
+                            h2d_event.record()
+                            self.storage_manager.schedule_staging_release(
+                                h2d_event, memory_obj
+                            )
+                    if _h2d_error is not None:
+                        raise _h2d_error
+                else:
+                    for chunk_idx, memory_obj in enumerate(memory_obj_batch):
+                        lmcache_memcpy_async_h2d(
+                            memory_obj,
+                            gpu_context.get_tmp_gpu_buffer_flat(chunk_idx=chunk_idx),
+                        )
+                    
                 for group_idx in range(num_groups):
                     tmp_buffers = gpu_context.get_tmp_chunk_gpu_buffer_batched(
                         batch_len, group_idx
@@ -1200,6 +1254,14 @@ class MPCacheEngine:
         # Release GPU contexts
         self.gpu_contexts.clear()
 
+    def _create_storage_manager(
+        self,
+        config: StorageManagerConfig,
+    ) -> StorageManager:
+        """Factory method: create StorageManager or ABOStorageManager."""
+        if self._abo_enabled:
+            return ABOStorageManager(config)
+        return StorageManager(config)
     # -----------------------------------------------------------------
     # Background TTL scan
     # -----------------------------------------------------------------
