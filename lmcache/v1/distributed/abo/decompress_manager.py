@@ -34,6 +34,7 @@ from lmcache.logging import init_logger
 from lmcache.v1.distributed.abo.compressed_memory_obj import CompressedMemoryObj
 
 if TYPE_CHECKING:
+    # First Party
     from lmcache.v1.memory_management import MemoryObj
 
 logger = init_logger(__name__)

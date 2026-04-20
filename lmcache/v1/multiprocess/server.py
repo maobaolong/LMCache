@@ -15,6 +15,7 @@ import zmq
 # First Party
 from lmcache.logging import init_logger
 from lmcache.utils import _lmcache_nvtx_annotate
+from lmcache.v1.distributed.abo.abo_storage_manager import ABOStorageManager
 from lmcache.v1.distributed.api import (
     MemoryLayoutDesc,
     ObjectKey,
@@ -71,13 +72,6 @@ from lmcache.v1.periodic_thread import (
 )
 from lmcache.v1.platform.cache_context import create_cache_context
 import lmcache.c_ops as lmc_ops
-
-try:
-    from lmcache.v1.distributed.abo.abo_storage_manager import (
-        ABOStorageManager,
-    )
-except ImportError:
-    ABOStorageManager = None
 
 logger = init_logger(__name__)
 
@@ -415,7 +409,7 @@ class MPCacheEngine:
                     )
                 # ABO: mark as needing compress before D2H (STORE path only)
                 if self._abo_enabled:
-                    memory_obj._need_compress = True
+                    memory_obj._need_compress = True  # type: ignore[attr-defined]  # noqa: E501,F821
 
                 # Store is not batched, so we always use chunk_idx=0 (single slot)
                 lmcache_memcpy_async_d2h(
@@ -426,7 +420,7 @@ class MPCacheEngine:
                 if self._abo_enabled:
                     d2h_event = torch.cuda.Event()
                     d2h_event.record()
-                    self.storage_manager.abo_compress_manager.submit_per_chunk_compress(
+                    self.storage_manager.abo_compress_manager.submit_per_chunk_compress(  # type: ignore[attr-defined]  # noqa: E501,F821
                         d2h_event, obj_key, memory_obj
                     )
 
@@ -593,7 +587,7 @@ class MPCacheEngine:
                             # Record event on H2D stream
                             h2d_event = torch.cuda.Event()
                             h2d_event.record()
-                            self.storage_manager.schedule_staging_release(
+                            self.storage_manager.schedule_staging_release(  # type: ignore[attr-defined]  # noqa: E501,F821
                                 h2d_event, memory_obj
                             )
                     if _h2d_error is not None:
@@ -604,7 +598,7 @@ class MPCacheEngine:
                             memory_obj,
                             gpu_context.get_tmp_gpu_buffer_flat(chunk_idx=chunk_idx),
                         )
-                    
+
                 for group_idx in range(num_groups):
                     tmp_buffers = gpu_context.get_tmp_chunk_gpu_buffer_batched(
                         batch_len, group_idx
@@ -1262,6 +1256,7 @@ class MPCacheEngine:
         if self._abo_enabled:
             return ABOStorageManager(config)
         return StorageManager(config)
+
     # -----------------------------------------------------------------
     # Background TTL scan
     # -----------------------------------------------------------------

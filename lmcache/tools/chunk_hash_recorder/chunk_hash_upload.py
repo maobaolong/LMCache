@@ -26,17 +26,20 @@ The script skips files that are still being actively written to
 (i.e. not modified in the last ``--stable-seconds`` window).
 """
 
+# Future
 from __future__ import annotations
 
+# Standard
+from datetime import datetime, timezone
+from pathlib import Path
 import argparse
 import logging
 import os
 import platform
 import shutil
 import time
-from datetime import datetime, timezone
-from pathlib import Path
 
+# Third Party
 import requests
 
 logging.basicConfig(
@@ -45,9 +48,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("chunk_hash_uploader")
 
-DEFAULT_BASE_URL = (
-    "https://mirrors.tencent.com/repository/generic"
-)
+DEFAULT_BASE_URL = "https://mirrors.tencent.com/repository/generic"
 
 
 def _is_stable(path: Path, stable_seconds: float) -> bool:
@@ -84,9 +85,7 @@ def upload_file(
                 timeout=timeout,
             )
         if resp.status_code in (200, 201):
-            logger.info(
-                "Uploaded %s (HTTP %d)", file_path.name, resp.status_code
-            )
+            logger.info("Uploaded %s (HTTP %d)", file_path.name, resp.status_code)
             return True
         else:
             logger.error(
@@ -126,21 +125,19 @@ def process_directory(
     uploaded_count = 0
     for file_path in files:
         if not _is_stable(file_path, stable_seconds):
-            logger.debug(
-                "Skipping %s (still being written)", file_path.name
-            )
+            logger.debug("Skipping %s (still being written)", file_path.name)
             continue
 
         # Build remote path: {LOCAL_IP}_{MODEL_NAME}/{YYYY-MM-DD}/{filename}
         file_mtime = file_path.stat().st_mtime
-        date_str = datetime.fromtimestamp(
-            file_mtime, tz=timezone.utc
-        ).strftime("%Y-%m-%d")
-        
+        date_str = datetime.fromtimestamp(file_mtime, tz=timezone.utc).strftime(
+            "%Y-%m-%d"
+        )
+
         # Get environment variables with defaults
         local_ip = os.environ.get("LOCAL_IP", "0.0.0.0")
         model_name = os.environ.get("MODEL_NAME", "xxx")
-        
+
         remote_path = f"{local_ip}_{model_name}/{date_str}/{file_path.name}"
 
         ok = upload_file(
@@ -169,8 +166,7 @@ def run_loop(args: argparse.Namespace) -> None:
 
     hostname = args.hostname or platform.node()
     logger.info(
-        "Starting chunk hash uploader: log_dir=%s, "
-        "interval=%ds, hostname=%s, repo=%s",
+        "Starting chunk hash uploader: log_dir=%s, interval=%ds, hostname=%s, repo=%s",
         log_dir,
         args.interval,
         hostname,
@@ -198,8 +194,7 @@ def run_loop(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Periodically upload chunk hash JSONL files "
-        "to Tencent Mirrors.",
+        description="Periodically upload chunk hash JSONL files to Tencent Mirrors.",
     )
     parser.add_argument(
         "--log-dir",
@@ -280,6 +275,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-

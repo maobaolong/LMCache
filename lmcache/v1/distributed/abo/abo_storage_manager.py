@@ -9,9 +9,9 @@ read_prefetched_results / close.
 """
 
 # Standard
-import threading
 from contextlib import contextmanager
 from typing import Iterator
+import threading
 
 # Third Party
 import cupy
@@ -20,8 +20,8 @@ import torch
 # First Party
 from lmcache.logging import init_logger
 from lmcache.v1.distributed.abo.abo_codec import (
-    ABOCodecFactory,
     _DEFAULT_RATIO,
+    ABOCodecFactory,
     resolve_abo_dtype,
 )
 from lmcache.v1.distributed.abo.abo_l1_manager import ABOL1Manager
@@ -50,9 +50,7 @@ class ABOStorageManager(StorageManager):
 
     def _create_l1_manager(self, config: StorageManagerConfig) -> L1Manager:
         """Override: create ABOL1Manager with abo config."""
-        return ABOL1Manager(
-            config.l1_manager_config, abo_config=config.abo_config
-        )
+        return ABOL1Manager(config.l1_manager_config, abo_config=config.abo_config)
 
     def __init__(self, config: StorageManagerConfig):
         super().__init__(config)
@@ -77,7 +75,7 @@ class ABOStorageManager(StorageManager):
         # 2. Create ABOCompressManager with on_compress_failed callback
         def _on_compress_failed(obj_key: ObjectKey) -> None:
             try:
-                result = self._l1_manager.abort_write([obj_key])
+                result = self._l1_manager.abort_write([obj_key])  # type: ignore[attr-defined]  # noqa: E501,F821
                 logger.warning(
                     "ABO compress failed for key %s, abort_write result: %s",
                     obj_key,
@@ -244,11 +242,12 @@ class ABOStorageManager(StorageManager):
         extra_count: int = 0,
     ) -> None:
         """Override: trigger early decompress for L1-hit objects."""
-        l1_hit_objs = [
-            l1_read_result[k][1]
-            for k in l1_hit_keys
-            if k in l1_read_result and l1_read_result[k][1] is not None
-        ]
+        l1_hit_objs: list[MemoryObj] = []
+        for k in l1_hit_keys:
+            if k in l1_read_result:
+                obj = l1_read_result[k][1]
+                if obj is not None:
+                    l1_hit_objs.append(obj)
         if l1_hit_objs:
             self._abo_decompress_manager.prepare_decompress_batch(
                 l1_hit_objs, is_retrieve=False, num_readers=extra_count + 1

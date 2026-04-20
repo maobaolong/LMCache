@@ -15,7 +15,8 @@ sync compress, mark done, and release staging.
 
 Timing design:
   main_stream:       D2H chunk0 → d2h_event0.record → D2H chunk1 → ...
-  compress_stream:   wait(d2h_event0) → launch_host_func(compress0) → compress_done_event0.record → ...
+  compress_stream:   wait(d2h_event0) → launch_host_func(compress0)
+                     → compress_done_event0.record → ...
   (callback thread): compress0() → mark_done + release staging
 """
 
@@ -30,6 +31,7 @@ import torch
 from lmcache.logging import init_logger
 
 if TYPE_CHECKING:
+    # First Party
     from lmcache.v1.distributed.abo.compressed_memory_obj import CompressedMemoryObj
     from lmcache.v1.distributed.api import ObjectKey
 

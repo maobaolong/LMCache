@@ -41,9 +41,7 @@ class ABOMemoryManager(L1MemoryManager):
     ):
         super().__init__(config)
         self._abo_config = abo_config
-        self._abo_codec = ABOCodecFactory.create_codec(
-            abo_config.codec, abo_config
-        )
+        self._abo_codec = ABOCodecFactory.create_codec(abo_config.codec, abo_config)
         logger.info("ABOMemoryManager initialized with abo_config=%s", abo_config)
 
     def allocate(
@@ -94,7 +92,7 @@ class ABOMemoryManager(L1MemoryManager):
             compressed_obj = CompressedMemoryObj(
                 raw_data=raw_obj.raw_data,
                 metadata=raw_obj.meta,
-                parent_allocator=raw_obj.parent_allocator,
+                parent_allocator=raw_obj.parent_allocator,  # type: ignore[attr-defined]  # noqa: E501,F821
                 staging_tensor=None,  # lazy allocation
                 original_shapes=layout_desc.shapes,
                 original_dtypes=layout_desc.dtypes,
@@ -107,7 +105,7 @@ class ABOMemoryManager(L1MemoryManager):
             compressed_objs.append(compressed_obj)
 
             # Invalidate original raw_obj to avoid double-free
-            raw_obj.parent_allocator = None
+            raw_obj.parent_allocator = None  # type: ignore[attr-defined]
 
         return L1Error.SUCCESS, compressed_objs
 

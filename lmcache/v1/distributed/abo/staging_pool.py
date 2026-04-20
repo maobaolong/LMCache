@@ -11,10 +11,10 @@ Thread-safe: uses threading.Condition for blocking wait and release notification
 """
 
 # Standard
-import time
 from collections import deque
 from typing import Optional
 import threading
+import time
 
 # Third Party
 import torch

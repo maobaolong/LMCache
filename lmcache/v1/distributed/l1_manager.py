@@ -11,6 +11,7 @@ import threading
 # First Party
 from lmcache.logging import init_logger
 from lmcache.native_storage_ops import TTLLock
+from lmcache.v1.distributed.abo.compressed_memory_obj import CompressedMemoryObj
 from lmcache.v1.distributed.api import MemoryLayoutDesc, ObjectKey
 from lmcache.v1.distributed.config import L1ManagerConfig
 from lmcache.v1.distributed.error import L1Error
@@ -19,11 +20,6 @@ from lmcache.v1.distributed.memory_manager import L1MemoryManager
 from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.mp_observability.event import Event, EventType
 from lmcache.v1.mp_observability.event_bus import get_event_bus
-
-try:
-    from lmcache.v1.distributed.abo.compressed_memory_obj import CompressedMemoryObj
-except ImportError:
-    CompressedMemoryObj = None
 
 logger = init_logger(__name__)
 
@@ -652,8 +648,7 @@ class L1Manager:
 
             # ABO: skip if async compress/decompress/H2D is in progress
             if (
-                CompressedMemoryObj is not None
-                and isinstance(entry.memory_obj, CompressedMemoryObj)
+                isinstance(entry.memory_obj, CompressedMemoryObj)
                 and entry.memory_obj.has_staging
             ):
                 ret[key] = L1Error.KEY_IS_LOCKED

@@ -17,7 +17,8 @@ Lifecycle (STORE path):
     │   release staging buffer
     │
     ▼ L2 store:
-        byte_array → memoryview of raw_data (fixed size, codec self-describes boundaries)
+        byte_array → memoryview of raw_data
+        (fixed size, codec self-describes boundaries)
 
 Lifecycle (RETRIEVE path):
   L2 load → raw_data (compressed data)
@@ -32,8 +33,8 @@ Lifecycle (RETRIEVE path):
 """
 
 # Standard
-import threading
 from typing import TYPE_CHECKING, Optional
+import threading
 
 # Third Party
 import torch
@@ -47,6 +48,7 @@ from lmcache.v1.memory_management import (
 )
 
 if TYPE_CHECKING:
+    # First Party
     from lmcache.v1.distributed.abo.staging_pool import StagingPool
     from lmcache.v1.memory_management import MemoryAllocatorInterface
 
@@ -207,7 +209,7 @@ class CompressedMemoryObj(TensorMemoryObj):
         return self._resolve_effective_buffer()
 
     @property
-    def data_ptr(self) -> Optional[int]:
+    def data_ptr(self) -> Optional[int]:  # type: ignore[override]
         """Host-side data pointer for memcpy operations."""
         buf = self._resolve_effective_buffer()
         return buf.data_ptr() if buf is not None else None
@@ -221,16 +223,21 @@ class CompressedMemoryObj(TensorMemoryObj):
 
         if buf is self._staging_tensor:
             # Return staging buffer view (first group shape/dtype)
-            original_bytes = self.meta.shapes[0].numel() * self.meta.dtypes[0].itemsize
+            original_bytes = (
+                self.meta.shapes[0].numel()  # type: ignore[index]
+                * self.meta.dtypes[0].itemsize  # type: ignore[index]
+            )
             return (
-                buf[:original_bytes].view(self.meta.dtypes[0]).view(self.meta.shapes[0])
+                buf[:original_bytes]
+                .view(self.meta.dtypes[0])  # type: ignore[index]
+                .view(self.meta.shapes[0])  # type: ignore[index]
             )
 
         # Staging released, return raw_data view
         return super().tensor
 
     @property
-    def byte_array(self) -> Optional[memoryview]:
+    def byte_array(self) -> Optional[memoryview]:  # type: ignore[override]
         """Get binary data view.
 
         Compression-aware behaviour:

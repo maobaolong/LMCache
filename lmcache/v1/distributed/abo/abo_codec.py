@@ -46,6 +46,7 @@ _DEFAULT_RATIO: dict[str, int] = {
 # Alignment granularity (bytes)
 _ALIGN_BYTES = 4096
 
+
 @dataclass
 class ABOConfig:
     """ABO KV compression configuration.
@@ -87,12 +88,14 @@ class ABOConfig:
                     f"got: {self.num_threads}"
                 )
             try:
+                # Third Party
                 import abokvpress  # type: ignore # noqa: F401
             except ImportError as e:
                 raise ImportError(
                     "Enabling ABO compression (enable_abo=True) requires the "
                     "abokvpress library. Please run: pip install abokvpress"
                 ) from e
+
 
 def resolve_abo_dtype(dtype: torch.dtype) -> str:
     """Convert torch.dtype to ABO dtype string.
@@ -141,10 +144,12 @@ class ABOCodecFactory:
 
         if method == "huffman":
             try:
+                # Third Party
                 from abokvpress import HuffmanCodec
             except ImportError as e:
                 raise ImportError(
-                    "abokvpress is not installed. Please install it with: pip install abokvpress"
+                    "abokvpress is not installed. "
+                    "Please install it with: pip install abokvpress"
                 ) from e
 
             codec = HuffmanCodec(use_avx512=True)
@@ -180,6 +185,11 @@ def estimate_compressed_bytes(
     """
     if ratio is None:
         abo_dtype = PYTORCH_DTYPE_TO_ABO.get(original_dtypes[-1])
+        if abo_dtype is None:
+            raise ValueError(
+                f"Unsupported dtype for ABO: {original_dtypes[-1]}. "
+                f"Supported: {list(PYTORCH_DTYPE_TO_ABO.keys())}"
+            )
         ratio = _DEFAULT_RATIO[abo_dtype]
 
     original_chunk_bytes = get_size_bytes(original_shapes, original_dtypes)
