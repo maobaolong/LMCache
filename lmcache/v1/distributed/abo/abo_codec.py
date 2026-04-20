@@ -30,13 +30,6 @@ from lmcache.v1.memory_management import get_size_bytes
 
 logger = init_logger(__name__)
 
-try:
-    from abokvpress import HuffmanCodec
-except ImportError as e:
-    raise ImportError(
-        "abokvpress is not installed. Please install it with: pip install abokvpress"
-    ) from e
-
 # PyTorch dtype -> ABO dtype string
 PYTORCH_DTYPE_TO_ABO: dict[torch.dtype, str] = {
     torch.bfloat16: "bf16",
@@ -147,6 +140,13 @@ class ABOCodecFactory:
         method = method.lower()
 
         if method == "huffman":
+            try:
+                from abokvpress import HuffmanCodec
+            except ImportError as e:
+                raise ImportError(
+                    "abokvpress is not installed. Please install it with: pip install abokvpress"
+                ) from e
+
             codec = HuffmanCodec(use_avx512=True)
             codec.set_num_threads(config.num_threads)
 
