@@ -663,8 +663,7 @@ class MPCacheEngine:
                 )
 
         tokens_retrieved = len(obj_keys) * self.chunk_size
-        session.retrieved_tokens += tokens_retrieved
-        session.retrieve_chunks += len(obj_keys)
+        session.update_retrieved_range(key.start, key.end)
         ed = time.perf_counter()
         elapsed = ed - st
         session.retrieve_time += elapsed

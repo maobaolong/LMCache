@@ -34,15 +34,45 @@ class Session:
     num_chunks_processed: int = 0
     created_at: float = field(default_factory=time.time)
     total_tokens: int = 0
-    retrieved_tokens: int = 0
+    _retrieved_start: int = 0
+    _retrieved_end: int = 0
     lookup_time: float = 0.0
     retrieve_time: float = 0.0
     store_time: float = 0.0
     lookup_chunks: int = 0
-    retrieve_chunks: int = 0
     store_chunks: int = 0
     lookup_ipc_key: Optional[IPCCacheEngineKey] = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def retrieved_tokens(self) -> int:
+        """Number of retrieved tokens, derived from the range."""
+        return self._retrieved_end - self._retrieved_start
+
+    @property
+    def retrieve_chunks(self) -> int:
+        """Number of retrieved chunks, derived from the range."""
+        chunk_size = self.hasher.chunk_size
+        return (self._retrieved_end - self._retrieved_start) // chunk_size
+
+    def update_retrieved_range(self, start: int, end: int) -> None:
+        """Update the retrieved token range (idempotent union).
+
+        Multiple TP workers may call this with the same range;
+        the result is always the union of all reported ranges.
+
+        Args:
+            start: Start token index of the retrieved range.
+            end: End token index of the retrieved range.
+        """
+        with self._lock:
+            if self._retrieved_start == self._retrieved_end:
+                # First call: initialize the range
+                self._retrieved_start = start
+                self._retrieved_end = end
+            else:
+                self._retrieved_start = min(self._retrieved_start, start)
+                self._retrieved_end = max(self._retrieved_end, end)
 
     def set_tokens(self, full_token_ids: list[int]) -> None:
         """Update the token sequence (idempotent, replaces not extends).

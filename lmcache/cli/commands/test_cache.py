@@ -134,11 +134,12 @@ def _make_key(
     start: int = 0,
     end: int = 0,
     worker_id: int | None = None,
+    world_size: int = _WORLD_SIZE,
 ) -> IPCCacheEngineKey:
     """Build an IPCCacheEngineKey."""
     return IPCCacheEngineKey(
         model_name=_MODEL_NAME,
-        world_size=_WORLD_SIZE,
+        world_size=world_size,
         worker_id=worker_id,
         token_ids=token_ids,
         start=start,
@@ -229,11 +230,12 @@ def _send_register_kv_cache(
 def _send_lookup(
     sock: zmq.Socket,
     key: IPCCacheEngineKey,
+    tp_size: int = 1,
 ) -> int | None:
     """LOOKUP — returns prefetch job ID, or None on timeout."""
     payloads = [
         msgspec.msgpack.encode(key),
-        msgspec.msgpack.encode(1),  # tp_size
+        msgspec.msgpack.encode(tp_size),
     ]
     resp = _send_request(sock, RequestType.LOOKUP, payloads)
     if resp is None:
@@ -401,6 +403,8 @@ def _process_request(
     http_base: str = "",
     block_size: int = 16,
     use_gpu: bool = False,
+    tp_size: int = 1,
+    enable_mla: bool = False,
 ) -> list[str] | None:
     """Run the full lookup -> retrieve/store flow."""
     token_ids = _build_token_ids(seq_no, num_tokens)
@@ -420,17 +424,22 @@ def _process_request(
         )
         return None
 
+    # Non-MLA: world_size = tp_size (each worker has its own shard)
+    # MLA: world_size = 1 (all workers share the same key)
+    world_size = 1 if enable_mla else tp_size
+
     # Key for lookup (worker_id=None)
     lookup_key = _make_key(
         token_ids,
         request_id,
         start=0,
         end=num_full_tokens,
+        world_size=world_size,
     )
 
     # 1. LOOKUP
     t0 = time.monotonic()
-    job_id = _send_lookup(sock, lookup_key)
+    job_id = _send_lookup(sock, lookup_key, tp_size=tp_size)
     if job_id is None:
         print("  [seq %d/%s] LOOKUP timeout" % (seq_no, pass_label))
         return None
@@ -463,33 +472,39 @@ def _process_request(
     block_offset = seq_no * num_blocks
 
     # 3. RETRIEVE hit portion
+    #    MLA: all TP workers share the same key (worker_id=0)
+    #    Non-MLA: each TP worker has its own key (worker_id=i)
     if hit_chunks > 0:
-        retrieve_key = _make_key(
-            token_ids,
-            request_id,
-            start=0,
-            end=hit_tokens,
-            worker_id=0,
-        )
         t1 = time.monotonic()
-        status = _send_retrieve(
-            sock,
-            retrieve_key,
-            chunk_size,
-            hit_chunks,
-            block_offset=block_offset,
-            block_size=block_size,
-            use_gpu=use_gpu,
-        )
+        for i in range(tp_size):
+            wid = 0 if enable_mla else i
+            retrieve_key = _make_key(
+                token_ids,
+                request_id,
+                start=0,
+                end=hit_tokens,
+                worker_id=wid,
+                world_size=world_size,
+            )
+            status = _send_retrieve(
+                sock,
+                retrieve_key,
+                chunk_size,
+                hit_chunks,
+                block_offset=block_offset,
+                block_size=block_size,
+                use_gpu=use_gpu,
+            )
         retrieve_ms = (time.monotonic() - t1) * 1000
         print(
             "  [seq %d/%s] RETRIEVE: %s "
-            "(%d tokens, %.1f ms)"
+            "(%d tokens, %d workers, %.1f ms)"
             % (
                 seq_no,
                 pass_label,
                 status,
                 hit_tokens,
+                tp_size,
                 retrieve_ms,
             )
         )
@@ -498,32 +513,36 @@ def _process_request(
     if miss_chunks > 0:
         store_start = hit_tokens
         store_end = num_full_tokens
-        store_key = _make_key(
-            token_ids,
-            request_id,
-            start=store_start,
-            end=store_end,
-            worker_id=0,
-        )
         t2 = time.monotonic()
         store_block_off = block_offset + (hit_tokens // block_size)
-        status = _send_store(
-            sock,
-            store_key,
-            chunk_size,
-            block_offset=store_block_off,
-            block_size=block_size,
-            use_gpu=use_gpu,
-        )
+        for i in range(tp_size):
+            wid = 0 if enable_mla else i
+            store_key = _make_key(
+                token_ids,
+                request_id,
+                start=store_start,
+                end=store_end,
+                worker_id=wid,
+                world_size=world_size,
+            )
+            status = _send_store(
+                sock,
+                store_key,
+                chunk_size,
+                block_offset=store_block_off,
+                block_size=block_size,
+                use_gpu=use_gpu,
+            )
         store_ms = (time.monotonic() - t2) * 1000
         print(
             "  [seq %d/%s] STORE: %s "
-            "(%d tokens, %.1f ms)"
+            "(%d tokens, %d workers, %.1f ms)"
             % (
                 seq_no,
                 pass_label,
                 status,
                 store_end - store_start,
+                tp_size,
                 store_ms,
             )
         )
@@ -654,6 +673,23 @@ class TestCacheCommand(BaseCommand):
         )
 
         parser.add_argument(
+            "--tp-size",
+            type=int,
+            default=1,
+            help=(
+                "Tensor-parallel size to simulate multi-worker retrieve (default: 1)"
+            ),
+        )
+        parser.add_argument(
+            "--enable-mla",
+            action="store_true",
+            default=False,
+            help=(
+                "Enable MLA mode: all TP workers share "
+                "the same KV cache key (default: False)"
+            ),
+        )
+        parser.add_argument(
             "--start",
             type=int,
             default=0,
@@ -752,8 +788,11 @@ class TestCacheCommand(BaseCommand):
             )
 
         # Register KV cache before any store/retrieve
+        # MLA: world_size=1 (shared key); non-MLA: world_size=tp_size
+        register_world_size = 1 if args.enable_mla else args.tp_size
         ok = _send_register_kv_cache(
             sock,
+            world_size=register_world_size,
             layout_hints=layout_hints,
             gpu_tensors=gpu_tensors,
         )
@@ -787,6 +826,8 @@ class TestCacheCommand(BaseCommand):
                     http_base=http_base,
                     block_size=args.block_size,
                     use_gpu=use_gpu,
+                    tp_size=args.tp_size,
+                    enable_mla=args.enable_mla,
                 )
 
                 time.sleep(args.interval)
@@ -801,6 +842,8 @@ class TestCacheCommand(BaseCommand):
                     http_base=http_base,
                     block_size=args.block_size,
                     use_gpu=use_gpu,
+                    tp_size=args.tp_size,
+                    enable_mla=args.enable_mla,
                 )
 
                 # Compare checksums
