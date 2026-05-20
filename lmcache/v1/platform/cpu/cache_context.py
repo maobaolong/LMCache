@@ -142,7 +142,11 @@ class CpuCacheContext:
                 self.tmp_chunk_group_offsets_[-1] + byte_size
             )
         self.tmp_chunk_bytes_ = self.tmp_chunk_group_offsets_[-1]
-        self.tmp_gpu_buffer_ = torch.empty(
+        # Buffer lives on CPU; keep the attribute name aligned with the
+        # context to avoid GPU-prefixed naming bleeding into a CPU-only
+        # class. The public ``get_tmp_gpu_buffer_flat`` method name is
+        # preserved so ``server.py`` can duck-type across backends.
+        self.tmp_cpu_buffer_ = torch.empty(
             self.tmp_chunk_bytes_ * self.max_batch_size,
             dtype=torch.uint8,
         )
@@ -284,7 +288,7 @@ class CpuCacheContext:
                 "chunk_idx %d >= max_batch_size %d" % (chunk_idx, self.max_batch_size)
             )
         start = chunk_idx * self.tmp_chunk_bytes_
-        return self.tmp_gpu_buffer_[start : start + self.tmp_chunk_bytes_]
+        return self.tmp_cpu_buffer_[start : start + self.tmp_chunk_bytes_]
 
     def get_tmp_chunk_gpu_buffer(self, group_idx: int = 0) -> torch.Tensor:
         """Returns a typed view of the temp buffer for one chunk."""
@@ -292,7 +296,7 @@ class CpuCacheContext:
         shape = self.get_kv_buffer_shape(self.lmcache_logical_chunk_size, group_idx)
         start = self.tmp_chunk_group_offsets_[group_idx]
         end = self.tmp_chunk_group_offsets_[group_idx + 1]
-        return self.tmp_gpu_buffer_[start:end].view(group.dtype).view(shape)
+        return self.tmp_cpu_buffer_[start:end].view(group.dtype).view(shape)
 
     def get_tmp_chunk_gpu_buffer_batched(
         self, batch_size: int, group_idx: int = 0
@@ -308,7 +312,7 @@ class CpuCacheContext:
         g_end = self.tmp_chunk_group_offsets_[group_idx + 1]
         chunk = self.tmp_chunk_bytes_
         return [
-            self.tmp_gpu_buffer_[i * chunk + g_start : i * chunk + g_end]
+            self.tmp_cpu_buffer_[i * chunk + g_start : i * chunk + g_end]
             .view(group.dtype)
             .view(shape)
             for i in range(batch_size)

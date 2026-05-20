@@ -49,6 +49,23 @@ def test_migrate_to_shm_and_wrap_zero_copy_view():
         shm_unlink(wrapper.shm_name)
 
 
+def test_migrate_handles_empty_tensor():
+    """Empty tensors must not call ``mmap`` (length 0 is EINVAL).
+
+    Regression for the case where ``nbytes == 0``: the wrapper carries
+    an empty ``shm_name`` and ``to_tensor`` rebuilds the empty view in
+    process without touching POSIX shared memory.
+    """
+    src = torch.empty((0, 4), dtype=torch.float32)
+    wrapper = migrate_to_shm_and_wrap(src)
+    assert isinstance(wrapper, CpuShmTensorWrapper)
+    assert wrapper.shm_name == ""
+    assert wrapper.nbytes == 0
+    view = wrapper.to_tensor()
+    assert view.shape == (0, 4)
+    assert view.dtype == torch.float32
+
+
 def test_migrate_is_idempotent_on_same_tensor():
     """Re-wrapping the same tensor reuses the existing SHM segment."""
     src = torch.zeros((3, 5), dtype=torch.float32)

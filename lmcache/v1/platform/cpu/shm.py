@@ -215,6 +215,10 @@ class CpuShmTensorWrapper(CudaIPCWrapper):
         replayed faithfully on the receiving side; reshape would
         silently re-coalesce strides and lose, e.g., channels_last.
         """
+        # Empty tensors carry no SHM segment (mmap with length 0 is
+        # undefined / EINVAL on POSIX); rebuild the empty view in-process.
+        if self.nbytes == 0:
+            return torch.empty(self.shape, dtype=self.dtype)
         addr = shm_map_readwrite(self.shm_name, self.nbytes)
         # ``torch.frombuffer`` requires a writable buffer; build one
         # via ctypes so the resulting torch tensor shares storage
@@ -285,9 +289,14 @@ def migrate_to_shm_and_wrap(tensor: torch.Tensor) -> CpuShmTensorWrapper:
                 return CpuShmTensorWrapper(tensor, cached_name)
             # Stale entry from a GC'd tensor whose id has been
             # reused; drop it and fall through to allocate fresh.
-            _CPU_SHM_NAMES.pop(tid, None)
+        _CPU_SHM_NAMES.pop(tid, None)
 
         nbytes = tensor.numel() * tensor.element_size()
+        if nbytes == 0:
+            # No SHM segment for empty tensors: ``mmap`` with length 0
+            # is undefined / EINVAL on POSIX. ``to_tensor`` rebuilds an
+            # empty view directly when ``shm_name`` is empty.
+            return CpuShmTensorWrapper(tensor, "")
         shm_name = "%s%d_%d" % (
             CpuShmTensorWrapper.SHM_NAME_PREFIX,
             os.getpid(),
