@@ -511,7 +511,12 @@ def parse_kvcache_shape_spec(
         shape_desc.nh = nh
         shape_desc.hs = hs
         shape_desc.element_size = dtype.itemsize
-        lmc_ops.set_shape_desc_dtype(shape_desc, dtype)
+        # Import here to break a circular import via
+        # lmcache.v1.gpu_connector.__init__ → metadata → kv_layer_groups.
+        # First Party
+        from lmcache.v1.gpu_connector.utils import set_shape_desc_dtype
+
+        set_shape_desc_dtype(shape_desc, dtype)
 
         indices = list(range(layer_offset, layer_offset + layer_count))
         groups.append(

@@ -326,22 +326,6 @@ class PageBufferShapeDesc:
         self.dtype: torch.dtype | None = None
 
 
-def set_shape_desc_dtype(shape_desc, dtype: torch.dtype) -> None:
-    """Best-effort ``shape_desc.dtype = dtype``.
-
-    The pure-Python ``PageBufferShapeDesc`` exposes a ``dtype`` slot so
-    the CPU fallback kernel can disambiguate float16 vs bfloat16 (both
-    have ``element_size == 2``). The pybind C++ struct in
-    ``csrc/pybind.cpp`` has no such field; assignment raises
-    ``AttributeError`` and is silently swallowed here so call sites
-    don't need to branch on the active backend.
-    """
-    try:
-        shape_desc.dtype = dtype
-    except AttributeError:
-        pass
-
-
 def alloc_pinned_numa_ptr(size: int, numa_id: int = 0) -> int:
     """Non-CUDA equivalent of allocating pinned memory with NUMA awareness.
     On XPU, uses pin_memory=True (SYCL USM host allocation) for fast transfers.
