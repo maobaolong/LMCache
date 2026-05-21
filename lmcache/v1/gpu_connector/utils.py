@@ -1267,10 +1267,7 @@ def make_page_buffer_shape_desc(
     # The C++ PageBufferShapeDesc has no ``dtype`` field, but the
     # pure-Python CPU fallback (``non_cuda_equivalents``) does -- and
     # needs it to disambiguate float16 vs bfloat16. Set best-effort.
-    try:
-        desc.dtype = dtype
-    except AttributeError:
-        pass
+    lmc_ops.set_shape_desc_dtype(desc, dtype)
 
     resolved_stride = int(block_stride_elems) if block_stride_elems else 0
     desc.block_stride_elems = resolved_stride

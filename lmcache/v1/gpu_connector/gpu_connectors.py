@@ -2058,10 +2058,7 @@ class TRTLLMGPUConnector(GPUConnectorInterface):
         shape_desc.nh = self.num_kv_heads
         shape_desc.hs = self.head_dim
         shape_desc.element_size = normalized.element_size()
-        try:
-            shape_desc.dtype = self.dtype
-        except AttributeError:
-            pass
+        lmc_ops.set_shape_desc_dtype(shape_desc, self.dtype)
         self.shape_desc = shape_desc
 
         self.paged_buffer_ptrs = torch.tensor(
