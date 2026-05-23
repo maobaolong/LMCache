@@ -408,6 +408,38 @@ On the vLLM side, specify the LMCache server host and port via the
         --kv-transfer-config \
         '{"kv_connector":"LMCacheMPConnector", "kv_role":"kv_both", "kv_connector_extra_config": {"lmcache.mp.host": "127.0.0.1", "lmcache.mp.port": 6000}}'
 
+Connector ``extra_config`` Keys
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+All connector-level options are passed through
+``kv_connector_extra_config`` and use the ``lmcache.mp.`` prefix.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 15 55
+
+   * - Key
+     - Default
+     - Description
+   * - ``lmcache.mp.host``
+     - ``tcp://localhost``
+     - Host of the LMCache server.
+   * - ``lmcache.mp.port``
+     - ``5555``
+     - Port of the LMCache server.
+   * - ``lmcache.mp.mq_timeout``
+     - ``300.0``
+     - Timeout (seconds) for blocking message-queue requests.
+   * - ``lmcache.mp.heartbeat_interval``
+     - ``10.0``
+     - Interval (seconds) between heartbeat pings to the server.
+   * - ``lmcache.mp.mp_transfer_mode``
+     - ``auto``
+     - Routing mode for the worker -> server transfer context. One of
+       ``auto`` (CUDA -> handle, others -> data), ``handle`` (force IPC /
+       SHM zero-copy), or ``data`` (force worker-side gather/scatter copy).
+       Overrides the ``LMCACHE_MP_TRANSFER_MODE`` env var when set.
+
 Environment Variables
 ---------------------
 
@@ -420,6 +452,11 @@ Environment Variables
    * - ``LMCACHE_LOG_LEVEL``
      - Log level for LMCache (``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``).
        Set to ``DEBUG`` to see L2 store activity, prefetch results, etc.
+   * - ``LMCACHE_MP_TRANSFER_MODE``
+     - Default routing mode for the worker -> server transfer context
+       (``auto`` / ``handle`` / ``data``). Equivalent to the
+       ``lmcache.mp.mp_transfer_mode`` extra_config key, which takes
+       precedence when both are set.
    * - ``PYTHONHASHSEED``
      - Set to a fixed value for reproducible hashing across processes
        (relevant when using ``--hash-algorithm builtin``).

@@ -46,6 +46,13 @@ class ExtraConfigDefault(enum.Enum):
     # Interval (seconds) between periodic heartbeat pings
     # to the server.
     heartbeat_interval = 10.0
+    # Routing mode for ``create_transfer_context``: ``auto`` keeps the
+    # historical CUDA -> handle / others -> data dispatch; ``handle``
+    # forces the IPC / SHM zero-copy path; ``data`` forces the
+    # worker-side gather/scatter copy path. Mirrors the
+    # ``LMCACHE_MP_TRANSFER_MODE`` env var; this extra_config key wins
+    # when both are set.
+    mp_transfer_mode = "auto"
 
 
 # Backward-compatible aliases for the legacy `lmcache_mp_connector_0180`
@@ -871,6 +878,9 @@ class LMCacheMPWorkerAdapter:
             cfg = _resolve_extra_config(extra_config)
             mq_timeout = cfg[ExtraConfigDefault.mq_timeout.name]
             heartbeat_interval = cfg[ExtraConfigDefault.heartbeat_interval.name]
+            self._mp_transfer_mode = cfg[ExtraConfigDefault.mp_transfer_mode.name]
+        else:
+            self._mp_transfer_mode = ExtraConfigDefault.mp_transfer_mode.value
         self.mq_client = MessageQueueClient(server_url, context)
         self._mq_timeout = mq_timeout
 
@@ -1017,7 +1027,9 @@ class LMCacheMPWorkerAdapter:
                 mq_timeout.
         """
         self.kv_caches = kv_caches
-        self.transfer_ctx = create_transfer_context(kv_caches)
+        self.transfer_ctx = create_transfer_context(
+            kv_caches, mode=self._mp_transfer_mode
+        )
         layout_hints = vllm_layout_hints()
         layout_hints["inference_engine_logical_block_size"] = (
             self.vllm_logical_block_size

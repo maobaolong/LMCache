@@ -99,6 +99,30 @@ def test_wrap_kv_caches_wraps_all_tensors(monkeypatch: Any) -> None:
     assert len(wrapped) == len(kv_caches)
 
 
+def test_resolve_extra_config_default_mp_transfer_mode_is_auto() -> None:
+    """Without override the resolved mp_transfer_mode must be ``auto``."""
+    # First Party
+    from lmcache.integration.vllm.vllm_multi_process_adapter import (
+        ExtraConfigDefault,
+        _resolve_extra_config,
+    )
+
+    cfg = _resolve_extra_config(None)
+    assert cfg[ExtraConfigDefault.mp_transfer_mode.name] == "auto"
+
+
+def test_resolve_extra_config_overrides_mp_transfer_mode() -> None:
+    """``lmcache.mp.mp_transfer_mode`` override flows through unchanged."""
+    # First Party
+    from lmcache.integration.vllm.vllm_multi_process_adapter import (
+        ExtraConfigDefault,
+        _resolve_extra_config,
+    )
+
+    cfg = _resolve_extra_config({"lmcache.mp.mp_transfer_mode": "data"})
+    assert cfg[ExtraConfigDefault.mp_transfer_mode.name] == "data"
+
+
 def test_create_transfer_context_uses_non_cuda_context_on_cpu() -> None:
     """Ensure transfer context factory returns DataTransferContext for CPU KV."""
     # First Party
@@ -107,6 +131,79 @@ def test_create_transfer_context_uses_non_cuda_context_on_cpu() -> None:
         create_transfer_context,
     )
 
+    context = create_transfer_context({"layer_0": torch.randn(2, 2)})
+    assert isinstance(context, DataTransferContext)
+
+
+def test_create_transfer_context_force_data_mode() -> None:
+    """``mode='data'`` must always pick DataTransferContext, even for CUDA."""
+    # First Party
+    from lmcache.v1.multiprocess.transfer_context import (
+        DataTransferContext,
+        MPTransferMode,
+        create_transfer_context,
+    )
+
+    context = create_transfer_context(
+        {"layer_0": torch.randn(2, 2)}, mode=MPTransferMode.DATA
+    )
+    assert isinstance(context, DataTransferContext)
+
+
+def test_create_transfer_context_force_handle_mode_on_cpu() -> None:
+    """``mode='handle'`` on CPU works because the CPU SHM wrapper is registered."""
+    # First Party
+    from lmcache.v1.multiprocess.transfer_context import (
+        HandleTransferContext,
+        create_transfer_context,
+    )
+
+    # Importing the CPU sub-package self-registers its KV-wrapper factory.
+    import lmcache.v1.platform.cpu  # noqa: F401
+
+    context = create_transfer_context({"layer_0": torch.randn(2, 2)}, mode="handle")
+    assert isinstance(context, HandleTransferContext)
+
+
+def test_create_transfer_context_invalid_mode_raises() -> None:
+    """Unknown mode strings must raise a clear ValueError."""
+    # First Party
+    from lmcache.v1.multiprocess.transfer_context import create_transfer_context
+
+    with pytest.raises(ValueError, match="Invalid MP transfer mode"):
+        create_transfer_context({"layer_0": torch.randn(2, 2)}, mode="bogus")
+
+
+def test_create_transfer_context_handle_mode_unsupported_device_raises(
+    monkeypatch: Any,
+) -> None:
+    """``mode='handle'`` must raise when no wrapper factory exists for device."""
+    # First Party
+    from lmcache.v1.multiprocess.transfer_context import create_transfer_context
+    from lmcache.v1.platform import _registry as platform_registry
+
+    snapshot = platform_registry.snapshot()
+    try:
+        # Drop every registered factory so 'cpu' can never be resolved.
+        platform_registry.restore({"kv_wrapper": {}, "availability": {}})
+        with pytest.raises(ValueError, match="not supported for device type"):
+            create_transfer_context({"layer_0": torch.randn(2, 2)}, mode="handle")
+    finally:
+        platform_registry.restore(snapshot)
+
+
+def test_create_transfer_context_env_var_overrides_default(
+    monkeypatch: Any,
+) -> None:
+    """``LMCACHE_MP_TRANSFER_MODE=data`` must force the data path."""
+    # First Party
+    from lmcache.v1.multiprocess.transfer_context import (
+        ENV_MP_TRANSFER_MODE,
+        DataTransferContext,
+        create_transfer_context,
+    )
+
+    monkeypatch.setenv(ENV_MP_TRANSFER_MODE, "data")
     context = create_transfer_context({"layer_0": torch.randn(2, 2)})
     assert isinstance(context, DataTransferContext)
 
