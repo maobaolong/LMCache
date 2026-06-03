@@ -18,15 +18,19 @@ from .base import (
 from .pickle import NonGpuContextPickle
 from .shm import NonGpuContextShm, ShmSlotDescriptor
 from .worker_transfer import (
+    ENV_MP_TRANSFER_MODE,
     DataTransferContext,
     HandleTransferContext,
+    MPTransferMode,
     TransferContext,
     create_transfer_context,
 )
 
 __all__ = [
+    "ENV_MP_TRANSFER_MODE",
     "DataTransferContext",
     "HandleTransferContext",
+    "MPTransferMode",
     "NonGpuContext",
     "NonGpuContextMetadata",
     "NonGpuContextPickle",
