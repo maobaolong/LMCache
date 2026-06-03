@@ -6,10 +6,10 @@
 # Standard
 from concurrent.futures import ThreadPoolExecutor
 from enum import IntEnum
-from multiprocessing import shared_memory
 from typing import Optional, Tuple
 import ctypes
 import ctypes.util
+import itertools
 import os
 import threading
 import warnings
@@ -21,12 +21,25 @@ import torch
 
 # First Party
 from lmcache import torch_dev
+from lmcache.v1.multiprocess.posix_shm import (
+    shm_create_readwrite,
+    shm_munmap,
+    shm_unlink,
+)
 
 # Store the tensor objects in memory so that they can be accessed
 # outside the scope of this file
 _tensor_registry: dict[int, torch.Tensor] = {}
-_shm_registry: dict[int, shared_memory.SharedMemory] = {}
+# Per-allocation bookkeeping so ``free_shm_pinned_ptr`` can release the
+# right segment without re-deriving its name from the address.
+_shm_alloc_meta: dict[int, tuple[str, int]] = {}
 _buf_registry: dict[int, ctypes.Array] = {}
+
+# Monotonic counter feeding anonymous SHM names; ``id(object())`` would
+# happily reuse the same int across consecutive calls (CPython recycles
+# the freshly-GC'd object slot) and trip ``shm_open(O_EXCL)``.
+_ANON_SHM_LOCK = threading.Lock()
+_ANON_SHM_COUNTER = itertools.count()
 
 # Cached copy library for lmcache_memcpy_async (lazy-initialized)
 _copy_lib_NOT_LOADED = object()
@@ -420,46 +433,51 @@ def batched_memcpy(src_ptrs: list[int], dst_ptrs: list[int], sizes: list[int]) -
 
 
 def alloc_shm_pinned_ptr(size: int, shm_name: str = "") -> int:
-    """Non-CUDA equivalent of allocating shared memory pinned pointer.
-    Uses multiprocessing.shared_memory for cross-platform POSIX shm."""
+    """Non-CUDA equivalent of allocating a shared-memory pinned pointer.
 
-    # Strip leading '/' for SharedMemory name
-    name = shm_name.lstrip("/") if shm_name else None
+    Uses the project's ``posix_shm`` facade (``_posixshmem`` + ``mmap``)
+    rather than :class:`multiprocessing.shared_memory.SharedMemory`,
+    which keeps an internal memoryview that conflicts with our long-lived
+    ``torch.frombuffer`` consumer at interpreter shutdown.
+    """
+    if not shm_name:
+        # Anonymous segments aren't shareable across processes; the only
+        # callers that omit ``shm_name`` are tests / single-process paths,
+        # for which we synthesize a unique name. Use a monotonic counter
+        # so back-to-back allocations cannot collide on a recycled
+        # ``id(object())`` and trip ``shm_open(O_EXCL)``.
+        with _ANON_SHM_LOCK:
+            seq = next(_ANON_SHM_COUNTER)
+        shm_name = "lmcache_anon_%d_%d" % (os.getpid(), seq)
 
-    # Clean up stale shm segment if it exists
-    if name:
-        try:
-            stale = shared_memory.SharedMemory(name=name, create=False)
-            stale.close()
-            stale.unlink()
-        except FileNotFoundError:
-            pass
+    # Best-effort stale cleanup (idempotent on missing names).
+    shm_unlink(shm_name)
 
-    shm = shared_memory.SharedMemory(name=name, create=True, size=size)
-
+    addr = shm_create_readwrite(shm_name, size)
+    # ``from_address`` does NOT export a buffer view, so the underlying
+    # mmap can be closed cleanly by ``shm_munmap`` later.
     array_type = ctypes.c_uint8 * size
-    buf = array_type.from_buffer(shm.buf)
-    ptr = ctypes.addressof(buf)
-
-    # Store references to keep them alive
+    buf = array_type.from_address(addr)
     tensor = torch.frombuffer(buf, dtype=torch.uint8)
-    _tensor_registry[ptr] = tensor
-    _buf_registry[ptr] = buf
-    _shm_registry[ptr] = shm
-    return ptr
+
+    _tensor_registry[addr] = tensor
+    _buf_registry[addr] = buf
+    _shm_alloc_meta[addr] = (shm_name, size)
+    return addr
 
 
 def free_shm_pinned_ptr(ptr: int, size: int = 0, shm_name: str = "") -> None:
-    """Non-CUDA equivalent of freeing a shared memory
-    pinned pointer."""
+    """Non-CUDA equivalent of freeing a shared memory pinned pointer."""
 
-    # Release in order: tensor -> ctypes buf -> shm
+    # Release in order: tensor -> ctypes buf -> mmap -> unlink.
     _tensor_registry.pop(ptr, None)
     _buf_registry.pop(ptr, None)
-    shm = _shm_registry.pop(ptr, None)
-    if shm is not None:
-        shm.close()
-        shm.unlink()
+    meta = _shm_alloc_meta.pop(ptr, None)
+    name = meta[0] if meta else shm_name
+    nbytes = meta[1] if meta else size
+    shm_munmap(ptr, nbytes)
+    if name:
+        shm_unlink(name)
 
 
 # Hugepage variants: non-CUDA platforms do not support hugepages, so these
@@ -723,6 +741,235 @@ def multi_layer_kv_transfer_unilateral(
             else:
                 gathered = paged_tensor.index_select(0, valid_slots)
                 key_value[kv_idx, layer_id, valid_mask_kv, :] = gathered.to(kv_device)
+
+
+def multi_layer_block_kv_transfer(
+    paged_buffer_ptrs_tensor: torch.Tensor | list[torch.Tensor],
+    lmcache_objects_ptrs: list[int],
+    block_ids: torch.Tensor,
+    device: torch.device | str,
+    direction: TransferDirection,
+    shape_desc: PageBufferShapeDesc,
+    lmcache_chunk_size: int,
+    gpu_kv_format: GPUKVFormat,
+    skip_prefix_n_blocks: int = 0,
+) -> None:
+    """Block-level paged-KV <-> LMCache temp-buffer transfer (Python fallback).
+
+    Mirrors the C++ ``multi_layer_block_kv_transfer`` kernel: copy whole
+    blocks (not tokens) between a per-layer paged KV pool and a flat
+    LMCache buffer that holds ``lmcache_chunk_size`` physical slots
+    arranged as ``[2, num_layers, num_tokens, hidden_dim]`` (NHD-flat).
+
+    Args:
+        paged_buffer_ptrs_tensor: Per-layer paged KV pool tensors. On the
+            CUDA path this is a 1-D int64 tensor of pointers; on the CPU
+            shim path it is a list of per-layer ``torch.Tensor`` views of
+            the registered KV pool. Both shapes are accepted.
+        lmcache_objects_ptrs: ``data_ptr()`` of each chunk's flat LMCache
+            buffer. Length = number of chunks (``len(block_ids) //
+            blocks_per_chunk``).
+        block_ids: Long tensor of engine block ids participating in the
+            transfer.  ``block_ids[skip_prefix_n_blocks:]`` is the active
+            slice; the prefix is ignored (matches CUDA kernel semantics).
+        device: Where the paged KV lives (always CPU on this fallback).
+        direction: ``TransferDirection.D2H`` (paged -> lmcache) or
+            ``TransferDirection.H2D`` (lmcache -> paged).
+        shape_desc: ``(kv_size, nl, nb, bs, nh, hs)``. Block stride is
+            inferred from the format; we ignore ``block_stride_elems`` on
+            this path because all callers use tightly packed CPU tensors.
+        lmcache_chunk_size: Physical slots per chunk (= number of tokens
+            per chunk for non-MLA, = ``blocks_per_chunk * bs``).
+        gpu_kv_format: One of the supported HND / NHD layouts. MLA and the
+            cross-layer / SGLang-fused formats are not supported here.
+        skip_prefix_n_blocks: Skip the first N blocks of ``block_ids``
+            (NOT tokens). The lmcache buffer slots indexed are still
+            ``[skip_prefix_n_blocks*bs ... )``, matching the CUDA kernel.
+
+    Raises:
+        NotImplementedError: For formats that this fallback does not yet
+            support (MLA, cross-layer, SGLang-fused). Add a branch here
+            when a CPU-side need surfaces.
+    """
+    fmt = int(gpu_kv_format)
+    if fmt in (
+        int(GPUKVFormat.NL_X_NB_BS_HS),
+        int(GPUKVFormat.NL_X_NBBS_ONE_HS),
+        int(GPUKVFormat.NB_NL_TWO_BS_NH_HS),
+        int(GPUKVFormat.TWO_X_NL_X_NBBS_NH_HS),
+        int(GPUKVFormat.TWO_X_NL_X_NB_BS_NH_HS),
+        int(GPUKVFormat.NB_NL_TWO_NH_BS_HS),
+    ):
+        raise NotImplementedError(
+            "multi_layer_block_kv_transfer fallback does not support "
+            "GPUKVFormat=%d yet (MLA / cross-layer / SGLang-fused)." % fmt
+        )
+
+    bs = int(shape_desc.bs)
+    nh = int(shape_desc.nh)
+    hs = int(shape_desc.hs)
+    hidden_dim = nh * hs
+    if bs <= 0 or nh <= 0 or hs <= 0:
+        raise ValueError(
+            "PageBufferShapeDesc fields must be positive, got "
+            "bs=%d nh=%d hs=%d" % (bs, nh, hs)
+        )
+    if lmcache_chunk_size % bs != 0:
+        raise ValueError(
+            "lmcache_chunk_size (%d) must be a multiple of bs (%d)"
+            % (lmcache_chunk_size, bs)
+        )
+    blocks_per_chunk = lmcache_chunk_size // bs
+
+    bids = block_ids.detach().to(dtype=torch.long).cpu()
+    total_blocks = int(bids.numel())
+    if skip_prefix_n_blocks < 0 or skip_prefix_n_blocks > total_blocks:
+        raise ValueError(
+            "skip_prefix_n_blocks (%d) out of range for %d block_ids"
+            % (skip_prefix_n_blocks, total_blocks)
+        )
+    active_block_count = total_blocks - skip_prefix_n_blocks
+    if active_block_count <= 0:
+        return
+
+    is_hnd = fmt == int(GPUKVFormat.NL_X_TWO_NB_NH_BS_HS)
+    is_nhd = fmt == int(GPUKVFormat.NL_X_TWO_NB_BS_NH_HS)
+    is_flash_infer = fmt == int(GPUKVFormat.NL_X_NB_TWO_BS_NH_HS)
+
+    # Per-layer paged tensors. The C++ kernel accepts a pointer tensor;
+    # CPU/SHM callers may pass either a list of real tensors or the
+    # pointer tensor produced by ``get_group_kv_pointers``. We accept
+    # both shapes here.
+    if isinstance(paged_buffer_ptrs_tensor, list):
+        per_layer_paged = paged_buffer_ptrs_tensor
+    else:
+        nb = int(shape_desc.nb)
+        if is_hnd:
+            layer_shape: tuple[int, ...] = (2, nb, nh, bs, hs)
+        elif is_nhd:
+            layer_shape = (2, nb, bs, nh, hs)
+        elif is_flash_infer:
+            layer_shape = (nb, 2, bs, nh, hs)
+        else:
+            raise NotImplementedError(
+                "multi_layer_block_kv_transfer fallback: cannot derive "
+                "layer_shape for format %d" % fmt
+            )
+        ptrs = paged_buffer_ptrs_tensor.detach().cpu().to(torch.long)
+        # Caller wires ``shape_desc.element_size`` from the dtype, so we
+        # round-trip via the first lmcache_objects_ptrs entry's dtype if
+        # available; otherwise fall back to fp16 (the only dtype the
+        # current bench server emits).
+        elem_size = int(shape_desc.element_size)
+        paged_dtype = (
+            torch.float16
+            if elem_size == 2
+            else torch.float32
+            if elem_size == 4
+            else torch.bfloat16
+            if elem_size == 0
+            else torch.float16
+        )
+        per_layer_paged = [
+            _tensor_from_ptr(int(p.item()), layer_shape, paged_dtype, device="cpu")
+            for p in ptrs
+        ]
+    num_layers = len(per_layer_paged)
+
+    # LMCache flat buffer layout: [2, num_layers, lmcache_chunk_size, hidden].
+    lmc_dtype = per_layer_paged[0].dtype
+    lmc_shape = (2, num_layers, lmcache_chunk_size, hidden_dim)
+    lmc_buffers: list[torch.Tensor] = [
+        _tensor_from_ptr(int(p), lmc_shape, lmc_dtype, device="cpu")
+        for p in lmcache_objects_ptrs
+    ]
+    if len(lmc_buffers) * blocks_per_chunk < active_block_count:
+        raise ValueError(
+            "Not enough lmcache buffers (%d * %d) for %d active blocks"
+            % (len(lmc_buffers), blocks_per_chunk, active_block_count)
+        )
+
+    is_hnd = fmt == int(GPUKVFormat.NL_X_TWO_NB_NH_BS_HS)
+    is_nhd = fmt == int(GPUKVFormat.NL_X_TWO_NB_BS_NH_HS)
+    is_flash_infer = fmt == int(GPUKVFormat.NL_X_NB_TWO_BS_NH_HS)
+
+    h2d = int(direction) == int(TransferDirection.H2D)
+
+    # Walk each active chunk, per layer, copying all bs tokens of every
+    # block in the chunk in a single advanced-indexing op.
+    for layer_id in range(num_layers):
+        paged = per_layer_paged[layer_id]
+        for chunk_idx in range(len(lmc_buffers)):
+            block_lo = skip_prefix_n_blocks + chunk_idx * blocks_per_chunk
+            block_hi = min(block_lo + blocks_per_chunk, total_blocks)
+            if block_lo >= block_hi:
+                break
+            blocks_this_chunk = block_hi - block_lo
+            chunk_block_ids = bids[block_lo:block_hi]
+
+            # ``lmc_buffers[chunk_idx]`` is its OWN flat buffer of shape
+            # [2, num_layers, lmcache_chunk_size, hidden]; each chunk
+            # restarts at token offset 0 within its slab.
+            tok_lo = 0
+            tok_hi = blocks_this_chunk * bs
+            lmc = lmc_buffers[chunk_idx]
+            # lmc[kv, layer_id, tok_lo:tok_hi, :] is a flat
+            # [num_tokens, hidden] window we will gather/scatter into.
+
+            if is_hnd:
+                # Paged shape: [kv, NB, NH, BS, HS]
+                if h2d:
+                    src = lmc[:, layer_id, tok_lo:tok_hi, :].view(
+                        2, blocks_this_chunk, bs, nh, hs
+                    )
+                    # Permute to [kv, NB, NH, BS, HS]
+                    paged.index_copy_(
+                        1, chunk_block_ids, src.permute(0, 1, 3, 2, 4).contiguous()
+                    )
+                else:
+                    gathered = paged.index_select(1, chunk_block_ids)
+                    # [kv, NB, NH, BS, HS] -> [kv, NB, BS, NH, HS]
+                    flat = (
+                        gathered.permute(0, 1, 3, 2, 4)
+                        .contiguous()
+                        .view(2, blocks_this_chunk * bs, hidden_dim)
+                    )
+                    lmc[:, layer_id, tok_lo:tok_hi, :] = flat
+            elif is_nhd:
+                # Paged shape: [kv, NB, BS, NH, HS]
+                if h2d:
+                    src = lmc[:, layer_id, tok_lo:tok_hi, :].view(
+                        2, blocks_this_chunk, bs, nh, hs
+                    )
+                    paged.index_copy_(1, chunk_block_ids, src)
+                else:
+                    gathered = paged.index_select(1, chunk_block_ids)
+                    flat = gathered.contiguous().view(
+                        2, blocks_this_chunk * bs, hidden_dim
+                    )
+                    lmc[:, layer_id, tok_lo:tok_hi, :] = flat
+            elif is_flash_infer:
+                # Paged shape: [NB, kv, BS, NH, HS]
+                if h2d:
+                    src = lmc[:, layer_id, tok_lo:tok_hi, :].view(
+                        2, blocks_this_chunk, bs, nh, hs
+                    )
+                    paged.index_copy_(
+                        0, chunk_block_ids, src.permute(1, 0, 2, 3, 4).contiguous()
+                    )
+                else:
+                    gathered = paged.index_select(0, chunk_block_ids)
+                    # [NB, kv, BS, NH, HS] -> [kv, NB, BS, NH, HS]
+                    flat = (
+                        gathered.permute(1, 0, 2, 3, 4)
+                        .contiguous()
+                        .view(2, blocks_this_chunk * bs, hidden_dim)
+                    )
+                    lmc[:, layer_id, tok_lo:tok_hi, :] = flat
+            else:
+                raise NotImplementedError(
+                    "multi_layer_block_kv_transfer fallback: unhandled format %d" % fmt
+                )
 
 
 def single_layer_kv_transfer(

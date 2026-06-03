@@ -1320,6 +1320,24 @@ def resolve_block_stride_and_log_layout(
     return block_stride_elems
 
 
+def set_shape_desc_dtype(
+    shape_desc: "lmc_ops.PageBufferShapeDesc", dtype: torch.dtype
+) -> None:
+    """Best-effort ``shape_desc.dtype = dtype``.
+
+    The pure-Python ``PageBufferShapeDesc`` in ``python_ops_fallback``
+    exposes a ``dtype`` slot so the CPU fallback kernel can
+    disambiguate float16 vs bfloat16 (both have ``element_size == 2``).
+    The pybind C++ struct in ``csrc/pybind.cpp`` has no such field;
+    assignment raises ``AttributeError`` and is silently swallowed here
+    so call sites don't need to branch on the active backend.
+    """
+    try:
+        shape_desc.dtype = dtype
+    except AttributeError:
+        pass
+
+
 def make_page_buffer_shape_desc(
     kv_caches: DiscoverableKVCache,
     gpu_kv_format: "lmc_ops.GPUKVFormat",
@@ -1364,7 +1382,12 @@ def make_page_buffer_shape_desc(
         else get_num_heads(kv_caches, gpu_kv_format, layer_idx)
     )
     desc.hs = get_head_size(kv_caches, gpu_kv_format, layer_idx)
-    desc.element_size = get_dtype(kv_caches, gpu_kv_format, layer_idx).itemsize
+    dtype = get_dtype(kv_caches, gpu_kv_format, layer_idx)
+    desc.element_size = dtype.itemsize
+    # The C++ PageBufferShapeDesc has no ``dtype`` field, but the
+    # pure-Python CPU fallback (``non_cuda_equivalents``) does -- and
+    # needs it to disambiguate float16 vs bfloat16. Set best-effort.
+    set_shape_desc_dtype(desc, dtype)
 
     resolved_stride = int(block_stride_elems) if block_stride_elems else 0
     desc.block_stride_elems = resolved_stride
