@@ -240,6 +240,44 @@ class L1Manager:
             self._registered_listeners.append(listener)
 
     @l1_mgr_synchronized
+    def replace_memory_obj(
+        self,
+        key: ObjectKey,
+        new_obj: MemoryObj,
+        mark_temporary: bool = False,
+    ) -> L1Error:
+        """Replace the stored memory object for an existing L1 key.
+
+        This preserves the key's lock state and only swaps the underlying
+        ``MemoryObj`` reference. It is intended for workflows that first
+        reserve an L1 entry using the normal write path and later substitute a
+        different backing object (for example, replacing a placeholder DRAM
+        buffer with an externally owned DMA target).
+
+        Args:
+            key: The key whose stored object should be replaced.
+            new_obj: The replacement memory object.
+            mark_temporary: When ``True``, mark the entry temporary so it is
+                deleted automatically after the last read lock is released.
+
+        Returns:
+            ``L1Error.SUCCESS`` when the key exists, otherwise
+            ``L1Error.KEY_NOT_EXIST``.
+        """
+        entry = self._objects.get(key)
+        if entry is None:
+            return L1Error.KEY_NOT_EXIST
+
+        old_obj = entry.memory_obj
+        entry.memory_obj = new_obj
+        if mark_temporary:
+            entry.is_temporary = True
+
+        if old_obj is not new_obj:
+            self._memory_manager.free([old_obj])
+        return L1Error.SUCCESS
+
+    @l1_mgr_synchronized
     def reserve_read(
         self,
         keys: list[ObjectKey],

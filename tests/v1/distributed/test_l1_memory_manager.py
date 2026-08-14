@@ -26,6 +26,8 @@ import torch
 
 # First Party
 from lmcache import torch_dev, torch_device_type
+from lmcache.v1.memory_management import MemoryObj
+from lmcache.v1.memory_allocators.ad_hoc_memory_allocator import AdHocMemoryAllocator
 from lmcache.v1.distributed.api import MemoryLayoutDesc
 from lmcache.v1.distributed.config import L1MemoryManagerConfig
 from lmcache.v1.distributed.error import L1Error
@@ -119,6 +121,27 @@ def large_layout():
         shapes=[torch.Size([2048, 1024])],  # 2M elements * 4 bytes = 8MB
         dtypes=[torch.float32],
     )
+
+
+class TrackingAllocator:
+    """Record frees while delegating storage ownership to a real allocator."""
+
+    def __init__(self, wrapped: AdHocMemoryAllocator) -> None:
+        self._wrapped = wrapped
+        self.freed_batches: list[list[MemoryObj]] = []
+
+    def batched_free(
+        self,
+        memory_objs: list[MemoryObj],
+        allocator_type: str | None = None,
+        update_stats: bool = True,
+    ) -> None:
+        self.freed_batches.append(list(memory_objs))
+        self._wrapped.batched_free(
+            memory_objs,
+            allocator_type=allocator_type,
+            update_stats=update_stats,
+        )
 
 
 # =============================================================================
@@ -301,6 +324,35 @@ class TestFree:
             assert not obj.is_valid()
 
         manager.close()
+
+    def test_free_dispatches_foreign_objects_to_their_parent_allocator(
+        self, basic_config, basic_layout
+    ):
+        """Foreign objects should be returned to their own allocator."""
+        manager = L1MemoryManager(basic_config)
+        initial_used, _ = manager.get_memory_usage()
+
+        error, local_objs = manager.allocate(basic_layout, count=1)
+        assert error == L1Error.SUCCESS
+        used_after_local_alloc, _ = manager.get_memory_usage()
+        assert used_after_local_alloc > initial_used
+
+        foreign_allocator = AdHocMemoryAllocator(device="cpu")
+        tracker = TrackingAllocator(foreign_allocator)
+        foreign_obj = foreign_allocator.allocate(
+            basic_layout.shapes,
+            basic_layout.dtypes,
+        )
+        assert foreign_obj is not None
+        foreign_obj.parent_allocator = tracker
+
+        free_error = manager.free([local_objs[0], foreign_obj])
+
+        assert free_error == L1Error.SUCCESS
+        assert tracker.freed_batches == [[foreign_obj]]
+        used_after_free, _ = manager.get_memory_usage()
+        assert used_after_free == initial_used
+        assert not local_objs[0].is_valid()
 
     def test_free_empty_list_returns_success(self, basic_config):
         """Test that freeing an empty list returns SUCCESS."""

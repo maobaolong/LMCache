@@ -2,6 +2,7 @@
 """CPU pinned-DRAM L1 memory manager."""
 
 # Standard
+from collections import defaultdict
 from multiprocessing import shared_memory
 
 # First Party
@@ -88,6 +89,40 @@ def create_memory_allocator(config: L1MemoryManagerConfig) -> MemoryAllocatorInt
         )
 
 
+def _free_by_parent_allocator(
+    local_allocator: MemoryAllocatorInterface,
+    mem_objs: list[MemoryObj],
+) -> None:
+    """Free objects through the allocator that owns each object.
+
+    ``L1MemoryManager`` primarily manages pinned-DRAM allocations from its
+    local CPU allocator. Some callers, however, may temporarily store
+    externally-owned ``MemoryObj`` instances in L1 (for example, a future
+    device-backed read path that swaps in a DMA buffer after reserving a CPU
+    placeholder). Those objects must be returned to the allocator that created
+    them rather than to the local DRAM allocator.
+
+    Args:
+        local_allocator: The allocator owned by this L1 memory manager.
+        mem_objs: Objects to free.
+    """
+    local_objs: list[MemoryObj] = []
+    foreign_batches: dict[MemoryAllocatorInterface, list[MemoryObj]] = defaultdict(list)
+
+    for memory_obj in mem_objs:
+        parent = memory_obj.parent()
+        if parent is None or parent is local_allocator:
+            local_objs.append(memory_obj)
+            continue
+        foreign_batches[parent].append(memory_obj)
+
+    if local_objs:
+        local_allocator.batched_free(local_objs)
+
+    for allocator, objs in foreign_batches.items():
+        allocator.batched_free(objs)
+
+
 # MAIN CLASS
 class L1MemoryManager:
     """
@@ -136,13 +171,15 @@ class L1MemoryManager:
         This function should be thread-safe.
 
         Args:
-            mem_objs (list[MemoryObj]): List of memory objects to free.
+            mem_objs (list[MemoryObj]): List of memory objects to free. Objects
+                allocated by a different parent allocator are dispatched back to
+                that allocator instead of being returned to the local DRAM pool.
 
         Returns:
             L1Error: Error code indicating the result of the operation.
             It will be `L1Error.SUCCESS` if the operation succeeds.
         """
-        self._allocator.batched_free(mem_objs)
+        _free_by_parent_allocator(self._allocator, mem_objs)
         return L1Error.SUCCESS
 
     def get_backend_type(self, memory_obj: MemoryObj) -> L1BackendType:

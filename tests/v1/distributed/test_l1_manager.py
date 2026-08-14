@@ -50,6 +50,8 @@ import torch
 
 # First Party
 from lmcache import torch_dev, torch_device_type
+from lmcache.v1.memory_management import MemoryObj
+from lmcache.v1.memory_allocators.ad_hoc_memory_allocator import AdHocMemoryAllocator
 from lmcache.v1.distributed.api import MemoryLayoutDesc, ObjectKey
 from lmcache.v1.distributed.config import (
     L1ManagerConfig,
@@ -146,6 +148,27 @@ def make_object_key(chunk_hash: int, model_name: str = "test_model", kv_rank: in
     """Helper to create ObjectKey instances."""
     hash_bytes = ObjectKey.IntHash2Bytes(chunk_hash)
     return ObjectKey(chunk_hash=hash_bytes, model_name=model_name, kv_rank=kv_rank)
+
+
+class TrackingAllocator:
+    """Record frees while delegating to a wrapped allocator."""
+
+    def __init__(self, wrapped: AdHocMemoryAllocator) -> None:
+        self._wrapped = wrapped
+        self.freed_batches: list[list[MemoryObj]] = []
+
+    def batched_free(
+        self,
+        memory_objs: list[MemoryObj],
+        allocator_type: str | None = None,
+        update_stats: bool = True,
+    ) -> None:
+        self.freed_batches.append(list(memory_objs))
+        self._wrapped.batched_free(
+            memory_objs,
+            allocator_type=allocator_type,
+            update_stats=update_stats,
+        )
 
 
 # =============================================================================
@@ -1329,6 +1352,103 @@ class TestDelete:
         assert manager.delete([key], force=True) == {key: L1Error.KEY_NOT_EXIST}
 
         manager.close()
+
+
+# =============================================================================
+# Tests for L1Manager.replace_memory_obj()
+# =============================================================================
+
+
+class TestReplaceMemoryObj:
+    """Tests for replacing the stored MemoryObj of an existing L1 entry."""
+
+    def test_replace_memory_obj_returns_key_not_exist_for_missing_key(
+        self, basic_l1_config, basic_layout
+    ):
+        """Replacing a missing key should fail cleanly."""
+        manager = L1Manager(basic_l1_config)
+        replacement_allocator = AdHocMemoryAllocator(device="cpu")
+        replacement = replacement_allocator.allocate(
+            basic_layout.shapes,
+            basic_layout.dtypes,
+        )
+        assert replacement is not None
+
+        error = manager.replace_memory_obj(make_object_key(9999), replacement)
+
+        assert error == L1Error.KEY_NOT_EXIST
+        replacement.ref_count_down()
+        manager.close()
+
+    def test_replace_memory_obj_swaps_buffer_and_preserves_lock_state(
+        self, basic_l1_config, basic_layout
+    ):
+        """Replacing the object should keep the entry write-locked."""
+        manager = L1Manager(basic_l1_config)
+        key = make_object_key(12345)
+
+        write_result = manager.reserve_write([key], [False], basic_layout)
+        original = write_result[key][1]
+        assert original is not None
+
+        replacement_allocator = AdHocMemoryAllocator(device="cpu")
+        replacement = replacement_allocator.allocate(
+            basic_layout.shapes,
+            basic_layout.dtypes,
+        )
+        assert replacement is not None
+        assert replacement.tensor is not None
+        replacement.tensor.fill_(7)
+
+        error = manager.replace_memory_obj(key, replacement)
+        state = manager.get_object_state(key)
+
+        assert error == L1Error.SUCCESS
+        assert state is not None
+        assert state.memory_obj is replacement
+        assert state.available_for_read() is False
+        assert state.available_for_write() is False
+        assert not original.is_valid()
+
+        delete_result = manager.delete([key], force=True)
+        assert delete_result[key] == L1Error.SUCCESS
+        manager.close()
+
+    def test_replace_memory_obj_can_mark_entry_temporary_and_free_foreign_obj(
+        self, basic_l1_config, basic_layout
+    ):
+        """Temporary replacement objects should be auto-freed after read."""
+        manager = L1Manager(basic_l1_config)
+        key = make_object_key(54321)
+
+        manager.reserve_write([key], [False], basic_layout)
+
+        wrapped_allocator = AdHocMemoryAllocator(device="cpu")
+        tracker = TrackingAllocator(wrapped_allocator)
+        replacement = wrapped_allocator.allocate(
+            basic_layout.shapes,
+            basic_layout.dtypes,
+        )
+        assert replacement is not None
+        replacement.parent_allocator = tracker
+
+        error = manager.replace_memory_obj(key, replacement, mark_temporary=True)
+        assert error == L1Error.SUCCESS
+
+        state = manager.get_object_state(key)
+        assert state is not None
+        assert state.is_temporary is True
+
+        finish_write = manager.finish_write([key])
+        assert finish_write[key] == L1Error.SUCCESS
+        reserve_read = manager.reserve_read([key])
+        assert reserve_read[key][0] == L1Error.SUCCESS
+
+        finish_read = manager.finish_read([key])
+
+        assert finish_read[key] == L1Error.SUCCESS
+        assert manager.get_object_state(key) is None
+        assert tracker.freed_batches == [[replacement]]
 
 
 # =============================================================================

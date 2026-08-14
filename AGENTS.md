@@ -24,6 +24,20 @@ uv pip install torch               # pre-requisite for CUDA extensions
 uv pip install -e . --no-build-isolation
 ```
 
+On this macOS host, the usual local validation environment is:
+
+```bash
+source ~/.venv-lmcache/bin/activate
+```
+
+Before importing or testing native extensions on this host, export PyTorch's
+shared-library directory so `lmcache_native` can resolve `libc10` / `libtorch`
+at runtime:
+
+```bash
+export DYLD_LIBRARY_PATH="$VIRTUAL_ENV/lib/python3.12/site-packages/torch/lib:${DYLD_LIBRARY_PATH:-}"
+```
+
 ## Build & Install
 
 ```bash
