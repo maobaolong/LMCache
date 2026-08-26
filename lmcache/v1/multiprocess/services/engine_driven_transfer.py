@@ -21,17 +21,12 @@ from lmcache.v1.multiprocess.custom_types import (
     RegisterEngineDrivenContextPayload,
 )
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext, ShmPoolInfo
-from lmcache.v1.multiprocess.engine_module import (
-    HandlerSpec,
-    InstanceLivenessTarget,
-    ThreadPoolType,
-)
-from lmcache.v1.multiprocess.protocols.base import RequestType
 from lmcache.v1.multiprocess.protocols.engine import (
     PrepareRetrieveResponse,
     PrepareStoreResponse,
     RegisterEngineDrivenContextResponse,
 )
+from lmcache.v1.multiprocess.service import InstanceLivenessTarget
 from lmcache.v1.multiprocess.transfer_context.base import EngineDrivenContextMetadata
 
 # Local
@@ -75,6 +70,12 @@ class EngineDrivenTransferModule(InstanceLivenessTarget):
         ctx: The shared engine context.
     """
 
+    GRPC_SERVICE_NAMES = ("EngineService",)
+    GRPC_METHOD_ALIASES = {
+        "UnregisterKvCacheEngineDrivenContext": "unregister_kv_cache",
+    }
+    GRPC_SKIP_METHODS = frozenset({"UnregisterKvCache"})
+
     def __init__(self, ctx: MPCacheServerContext) -> None:
         self._ctx = ctx
         self._engine_driven_contexts: dict[int, EngineDrivenContextEntry] = {}
@@ -96,46 +97,6 @@ class EngineDrivenTransferModule(InstanceLivenessTarget):
     def context(self) -> MPCacheServerContext:
         """Return the shared engine context. Exposed for testing only."""
         return self._ctx
-
-    def get_handlers(self) -> list[HandlerSpec]:
-        """Return handler specs for all request types this module serves.
-
-        Returns:
-            A list of HandlerSpec entries mapping request types to
-            their handler callables and thread pool assignments.
-        """
-        return [
-            HandlerSpec(
-                RequestType.REGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT,
-                self.register_kv_cache_engine_driven_context,
-                ThreadPoolType.SYNC,
-            ),
-            HandlerSpec(
-                RequestType.UNREGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT,
-                self.unregister_kv_cache,
-                ThreadPoolType.SYNC,
-            ),
-            HandlerSpec(
-                RequestType.PREPARE_STORE,
-                self.prepare_store,
-                ThreadPoolType.AFFINITY,
-            ),
-            HandlerSpec(
-                RequestType.COMMIT_STORE,
-                self.commit_store,
-                ThreadPoolType.AFFINITY,
-            ),
-            HandlerSpec(
-                RequestType.PREPARE_RETRIEVE,
-                self.prepare_retrieve,
-                ThreadPoolType.AFFINITY,
-            ),
-            HandlerSpec(
-                RequestType.COMMIT_RETRIEVE,
-                self.commit_retrieve,
-                ThreadPoolType.AFFINITY,
-            ),
-        ]
 
     def report_status(self) -> dict:
         """Return non-GPU transfer module status information.

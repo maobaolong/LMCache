@@ -31,11 +31,6 @@ from lmcache.v1.multiprocess.custom_types import (
     KVCache,
 )
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
-from lmcache.v1.multiprocess.engine_module import (
-    HandlerSpec,
-    ThreadPoolType,
-)
-from lmcache.v1.multiprocess.protocols.base import RequestType
 from lmcache.v1.multiprocess.token_hasher import (
     chunk_hash_windows_numba,
     rolling_hash_windows_numba,
@@ -322,6 +317,18 @@ class BlendModule:
         ctx: The shared engine context.
     """
 
+    GRPC_SERVICE_NAMES = ("BlendService", "BlendV2Service")
+    GRPC_METHOD_ALIASES = {
+        "CbLookupPreComputedV2": "cb_lookup_pre_computed",
+        "CbRetrievePreComputedV2": "cb_retrieve_pre_computed",
+    }
+    GRPC_SKIP_METHODS = frozenset(
+        {
+            "CbLookupPreComputed",
+            "CbRetrievePreComputed",
+        }
+    )
+
     def __init__(self, ctx: MPCacheServerContext) -> None:
         self._ctx = ctx
         self._cb_gpu_contexts: dict[int, PlainGPUCacheContext] = {}
@@ -333,46 +340,6 @@ class BlendModule:
     def context(self) -> MPCacheServerContext:
         """Return the shared engine context. Exposed for testing only."""
         return self._ctx
-
-    def get_handlers(self) -> list[HandlerSpec]:
-        """Return handler specs for all request types this module serves.
-
-        Returns:
-            A list of HandlerSpec entries mapping request types to
-            their handler callables and thread pool assignments.
-        """
-        return [
-            HandlerSpec(
-                RequestType.CB_REGISTER_KV_CACHE,
-                self.cb_register_kv_cache,
-                ThreadPoolType.SYNC,
-            ),
-            HandlerSpec(
-                RequestType.CB_UNREGISTER_KV_CACHE,
-                self.cb_unregister_kv_cache,
-                ThreadPoolType.SYNC,
-            ),
-            HandlerSpec(
-                RequestType.CB_STORE_PRE_COMPUTED,
-                self.cb_store_pre_computed,
-                ThreadPoolType.AFFINITY,
-            ),
-            HandlerSpec(
-                RequestType.CB_RETRIEVE_PRE_COMPUTED_V2,
-                self.cb_retrieve_pre_computed,
-                ThreadPoolType.AFFINITY,
-            ),
-            HandlerSpec(
-                RequestType.CB_STORE_FINAL,
-                self.cb_store_final,
-                ThreadPoolType.AFFINITY,
-            ),
-            HandlerSpec(
-                RequestType.CB_LOOKUP_PRE_COMPUTED_V2,
-                self.cb_lookup_pre_computed,
-                ThreadPoolType.NORMAL,
-            ),
-        ]
 
     def report_status(self) -> dict:
         """Return blend module status information.

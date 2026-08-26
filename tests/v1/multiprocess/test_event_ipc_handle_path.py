@@ -14,7 +14,7 @@ import torch
 
 # First Party
 from lmcache.v1.multiprocess.futures import DeviceMessagingFuture, MessagingFuture
-from lmcache.v1.multiprocess.protocol import RequestType
+from lmcache.v1.multiprocess.protocol import RPC, RpcMethod
 
 
 class _FakeEventBackend:
@@ -123,15 +123,15 @@ def test_worker_exports_events_through_platform_backend(
         lambda kv_caches: list(kv_caches.values()),
     )
 
-    sent: list[tuple[RequestType, list[object]]] = []
+    sent: list[tuple[RpcMethod, list[object]]] = []
 
     def send_request(
         _client: object,
-        request_type: RequestType,
+        request_type: RpcMethod,
         payload: list[object],
     ) -> MessagingFuture:
         sent.append((request_type, payload))
-        if request_type == RequestType.REGISTER_KV_CACHE:
+        if request_type == RPC.RegisterKvCache:
             return _resolved_future(True)
         return MessagingFuture()
 
@@ -171,11 +171,11 @@ def test_worker_exports_events_through_platform_backend(
     assert isinstance(store_future, DeviceMessagingFuture)
     assert isinstance(retrieve_future, DeviceMessagingFuture)
     assert sent[1] == (
-        RequestType.STORE,
+        RPC.Store,
         ["key", 1, [[0]], b"completion-handle"],
     )
     assert sent[2] == (
-        RequestType.RETRIEVE,
+        RPC.Retrieve,
         ["key", 1, [[0]], b"completion-handle", 2],
     )
     assert [call[0] for call in backend.calls] == [
@@ -191,7 +191,7 @@ def test_server_store_and_retrieve_delegate_event_ordering(
 ) -> None:
     """Server imports, waits, records, and exports through the event backend."""
     # First Party
-    from lmcache.v1.multiprocess.modules import lmcache_driven_transfer
+    from lmcache.v1.multiprocess.services import lmcache_driven_transfer
 
     backend = _FakeEventBackend()
 
@@ -300,7 +300,7 @@ def test_handle_path_has_no_musa_specific_imports_or_branches() -> None:
     """The scoped multiprocess modules remain backend-neutral."""
     # First Party
     from lmcache.v1.multiprocess import futures
-    from lmcache.v1.multiprocess.modules import lmcache_driven_transfer
+    from lmcache.v1.multiprocess.services import lmcache_driven_transfer
     from lmcache.v1.multiprocess.transfer_context import worker_transfer
 
     for module in (futures, lmcache_driven_transfer, worker_transfer):

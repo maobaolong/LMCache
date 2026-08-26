@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Wire format for the LMCache mp-mode message queue over gRPC.
+// Wire format for LMCache mp-mode gRPC.
 //
 // Every service method uses concrete request and response messages. Python
 // bindings are derived from this descriptor and the public ProtocolDefinition,
@@ -537,48 +537,15 @@ message CbRegisterRopeV3Request {
 
 message CbRegisterRopeV3Response {}
 
-// Concurrent callers can share one gRPC unary exchange. Dedicated unary RPCs
-// remain fully typed; Batch is a transport optimization and therefore carries
-// each typed message as bytes plus its RequestType-derived method id. Adding an
-// RPC does not require another Batch oneof arm.
-message BatchRequestItem {
-  uint32 method_id = 1;
-  bytes payload = 2;
-}
-
-message BatchRequest {
-  repeated BatchRequestItem items = 1;
-}
-
-message BatchError {
-  string status = 1;
-  string details = 2;
-}
-
-message BatchResponseItem {
-  oneof result {
-    bytes payload = 1;
-    BatchError error = 2;
-  }
-}
-
-message BatchResponse {
-  repeated BatchResponseItem items = 1;
-}
-
 // -----------------------------------------------------------------------
-// Service. One typed unary rpc per RequestType, plus Batch for concurrent
-// callers. Method names are the CamelCase form of the RequestType enum
-// (STORE -> Store, CB_LOOKUP_PRE_COMPUTED_V2 -> CbLookupPreComputedV2, etc.)
-// so gRPC's built-in routing replaces the old hand-written msgspec dispatch.
+// Services. Each service is one protocol module boundary; gRPC service names
+// carry the grouping that the old Python-side request registry used to own.
+// Method names remain the CamelCase form of the historical ALL_CAPS request
+// names (STORE -> Store, CB_LOOKUP_PRE_COMPUTED_V2 ->
+// CbLookupPreComputedV2, etc.).
 // -----------------------------------------------------------------------
 
-service MessageQueue {
-  // Transport optimization for concurrent callers. Single callers use the
-  // dedicated methods below and pay no batching delay.
-  rpc Batch(BatchRequest) returns (BatchResponse);
-
-  // Engine operations
+service EngineService {
   rpc RegisterKvCache(RegisterKvCacheRequest) returns (RegisterKvCacheResponse);
   rpc RegisterQCache(RegisterKvCacheRequest) returns (RegisterKvCacheResponse);
   rpc UnregisterKvCache(UnregisterKvCacheRequest)
@@ -607,21 +574,25 @@ service MessageQueue {
   rpc CommitStore(CommitStoreRequest) returns (CommitStoreResponse);
   rpc PrepareRetrieve(PrepareRetrieveRequest) returns (PrepareRetrieveResponse);
   rpc CommitRetrieve(CommitRetrieveRequest) returns (CommitRetrieveResponse);
+}
 
-  // Controller operations
+service ControllerService {
   rpc Clear(ClearRequest) returns (ClearResponse);
   rpc GetChunkSize(GetChunkSizeRequest) returns (GetChunkSizeResponse);
   rpc GetExperimental(GetExperimentalRequest) returns (GetExperimentalResponse);
   rpc Ping(PingRequest) returns (PingResponse);
+}
 
-  // Observability operations
+service ObservabilityService {
   rpc ReportBlockAllocation(ReportBlockAllocationRequest)
       returns (ReportBlockAllocationResponse);
+}
 
-  // Debug operations
+service DebugService {
   rpc Noop(NoopRequest) returns (NoopResponse);
+}
 
-  // Blend V1
+service BlendService {
   rpc CbRegisterKvCache(CbRegisterKvCacheRequest)
       returns (CbRegisterKvCacheResponse);
   rpc CbUnregisterKvCache(CbUnregisterKvCacheRequest)
@@ -633,14 +604,16 @@ service MessageQueue {
   rpc CbRetrievePreComputed(CbRetrievePreComputedRequest)
       returns (CbRetrievePreComputedResponse);
   rpc CbStoreFinal(CbStoreFinalRequest) returns (CbStoreFinalResponse);
+}
 
-  // Blend V2
+service BlendV2Service {
   rpc CbLookupPreComputedV2(CbLookupPreComputedV2Request)
       returns (CbLookupPreComputedV2Response);
   rpc CbRetrievePreComputedV2(CbRetrievePreComputedV2Request)
       returns (CbRetrievePreComputedV2Response);
+}
 
-  // Blend V3
+service BlendV3Service {
   rpc CbRegisterRopeV3(CbRegisterRopeV3Request)
       returns (CbRegisterRopeV3Response);
   rpc CbUnregisterRopeV3(CbUnregisterRopeV3Request)
@@ -648,8 +621,9 @@ service MessageQueue {
   rpc CbRetrievePreComputedV3(CbRetrievePreComputedV3Request)
       returns (CbRetrievePreComputedV3Response);
   rpc CbUnifiedLookup(CbUnifiedLookupRequest) returns (CbUnifiedLookupResponse);
+}
 
-  // P2P
+service P2PService {
   rpc P2PLookupAndLock(P2pLookupAndLockRequest)
       returns (P2pLookupAndLockResponse);
   rpc P2PQueryLookupResults(P2pQueryLookupResultsRequest)

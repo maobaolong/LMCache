@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Tests for the FREE_LOOKUP_LOCKS protocol: enum registration, protocol definition,
+Tests for the FREE_LOOKUP_LOCKS protocol: RPC registration, protocol definition,
 message-queue round-trip, server handler, and client-side adapter API.
 """
 
@@ -11,9 +11,10 @@ import threading
 # First Party
 from lmcache.v1.distributed.api import AttnWindowDesc
 from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey
-from lmcache.v1.multiprocess.mq import MessageQueueClient
+from lmcache.v1.multiprocess.mq import MultiprocessGrpcClient
 from lmcache.v1.multiprocess.protocol import (
-    RequestType,
+    RPC,
+    RpcMethod,
     get_handler_type,
     get_payload_classes,
     get_response_class,
@@ -33,14 +34,14 @@ from tests.v1.multiprocess.test_mq import (
 
 
 def test_free_locks_in_request_type():
-    """FREE_LOOKUP_LOCKS should be a member of RequestType."""
-    assert hasattr(RequestType, "FREE_LOOKUP_LOCKS")
-    assert isinstance(RequestType.FREE_LOOKUP_LOCKS, RequestType)
+    """FREE_LOOKUP_LOCKS should be a member of RpcMethod."""
+    assert hasattr(RpcMethod, "FREE_LOOKUP_LOCKS")
+    assert isinstance(RPC.FreeLookupLocks, RpcMethod)
 
 
 def test_free_locks_payload_classes():
     """FREE_LOOKUP_LOCKS payload should be [IPCCacheServerKey, int]."""
-    payload_classes = get_payload_classes(RequestType.FREE_LOOKUP_LOCKS)
+    payload_classes = get_payload_classes(RPC.FreeLookupLocks)
     assert len(payload_classes) == 2
     assert payload_classes[0] is IPCCacheServerKey
     assert payload_classes[1] is int
@@ -48,13 +49,13 @@ def test_free_locks_payload_classes():
 
 def test_free_locks_response_class():
     """FREE_LOOKUP_LOCKS should have no response (None)."""
-    response_class = get_response_class(RequestType.FREE_LOOKUP_LOCKS)
+    response_class = get_response_class(RPC.FreeLookupLocks)
     assert response_class is None
 
 
 def test_free_locks_handler_type():
     """FREE_LOOKUP_LOCKS should use BLOCKING handler type."""
-    handler_type = get_handler_type(RequestType.FREE_LOOKUP_LOCKS)
+    handler_type = get_handler_type(RPC.FreeLookupLocks)
     assert handler_type == HandlerType.BLOCKING
 
 
@@ -72,11 +73,11 @@ def test_mq_free_locks():
 
     helper = MessageQueueTestHelper(server_url="grpc://127.0.0.1:5570")
     helper.register_handler(
-        RequestType.FREE_LOOKUP_LOCKS, test_mq_handler_helpers.free_locks_handler
+        RPC.FreeLookupLocks, test_mq_handler_helpers.free_locks_handler
     )
 
     helper.run_test(
-        request_type=RequestType.FREE_LOOKUP_LOCKS,
+        request_type=RPC.FreeLookupLocks,
         payloads=[key, 1],
         expected_response=None,
         num_requests=1,
@@ -124,7 +125,7 @@ def test_server_free_lookup_locks_calls_finish_read_prefetched():
     """LookupModule.free_lookup_locks should resolve hash keys and call
     finish_read_prefetched on the storage manager."""
     # First Party
-    from lmcache.v1.multiprocess.modules.lookup import LookupModule
+    from lmcache.v1.multiprocess.services.lookup import LookupModule
 
     ctx = _make_free_locks_ctx([b"hash0"], windows=[-1], hit_chunks=1)
 
@@ -135,7 +136,7 @@ def test_server_free_lookup_locks_calls_finish_read_prefetched():
 
     sentinel_obj_keys = [MagicMock()]
     with patch(
-        "lmcache.v1.multiprocess.modules.lookup.ipc_key_to_object_keys",
+        "lmcache.v1.multiprocess.services.lookup.ipc_key_to_object_keys",
         return_value=[sentinel_obj_keys],
     ):
         module.free_lookup_locks(key, 1)
@@ -173,7 +174,7 @@ def test_server_free_lookup_locks_sliding_window_skips_unlocked_chunks():
     full-attention group's chunks 0-2 are released.
     """
     # First Party
-    from lmcache.v1.multiprocess.modules.lookup import LookupModule
+    from lmcache.v1.multiprocess.services.lookup import LookupModule
 
     hashes = [b"h0", b"h1", b"h2"]
     ctx = _make_free_locks_ctx(hashes, windows=[1, -1], hit_chunks=4)
@@ -192,7 +193,7 @@ def test_server_free_lookup_locks_sliding_window_releases_locked_suffix():
     releases chunk 3, the full-attention group releases chunks 0-3.
     """
     # First Party
-    from lmcache.v1.multiprocess.modules.lookup import LookupModule
+    from lmcache.v1.multiprocess.services.lookup import LookupModule
 
     hashes = [b"h0", b"h1", b"h2", b"h3"]
     ctx = _make_free_locks_ctx(hashes, windows=[1, -1], hit_chunks=4)
@@ -213,7 +214,7 @@ def test_server_free_lookup_locks_sliding_window_releases_locked_suffix():
 def test_server_free_lookup_locks_caps_release_at_hit_length():
     """Chunks beyond the hit length were never locked and must not be freed."""
     # First Party
-    from lmcache.v1.multiprocess.modules.lookup import LookupModule
+    from lmcache.v1.multiprocess.services.lookup import LookupModule
 
     hashes = [b"h0", b"h1", b"h2", b"h3"]
     ctx = _make_free_locks_ctx(hashes, windows=[-1], hit_chunks=2)
@@ -234,7 +235,7 @@ def test_server_free_lookup_locks_unknown_hit_skips_window_groups():
     concurrent reader's lock).
     """
     # First Party
-    from lmcache.v1.multiprocess.modules.lookup import LookupModule
+    from lmcache.v1.multiprocess.services.lookup import LookupModule
 
     hashes = [b"h0", b"h1", b"h2"]
     ctx = _make_free_locks_ctx(hashes, windows=[1, -1], hit_chunks=-1)
@@ -249,7 +250,7 @@ def test_server_free_lookup_locks_unknown_hit_skips_window_groups():
 def test_server_free_lookup_locks_no_matching_chunks():
     """LookupModule.free_lookup_locks with no chunks in range should be a no-op."""
     # First Party
-    from lmcache.v1.multiprocess.modules.lookup import LookupModule
+    from lmcache.v1.multiprocess.services.lookup import LookupModule
 
     ctx = MagicMock()
     ctx.token_hasher.chunk_size = 256
@@ -276,7 +277,7 @@ def test_server_free_lookup_locks_no_matching_chunks():
 def test_server_handler_registered():
     """LookupModule should have a free_lookup_locks method."""
     # First Party
-    from lmcache.v1.multiprocess.modules.lookup import LookupModule
+    from lmcache.v1.multiprocess.services.lookup import LookupModule
 
     assert hasattr(LookupModule, "free_lookup_locks")
     assert callable(LookupModule.free_lookup_locks)
@@ -306,7 +307,7 @@ def test_adapter_free_lookup_locks_sends_request():
     adapter._server_urls = ["tcp://test:0"]
     adapter._mq_timeout = 30.0
 
-    mock_client = MagicMock(spec=MessageQueueClient)
+    mock_client = MagicMock(spec=MultiprocessGrpcClient)
     mock_future = MagicMock()
     mock_client.submit_request.return_value = mock_future
     adapter.mq_clients = {"tcp://test:0": mock_client}
@@ -324,7 +325,7 @@ def test_adapter_free_lookup_locks_sends_request():
     call_args = mock_client.submit_request.call_args
     req_type = call_args[0][0]
     payloads = call_args[0][1]
-    assert req_type == RequestType.FREE_LOOKUP_LOCKS
+    assert req_type == RPC.FreeLookupLocks
 
     # Payload should be [key, tp_size]
     assert isinstance(payloads, list)
@@ -360,7 +361,7 @@ def test_adapter_free_lookup_locks_key_matches_lookup():
     adapter._heartbeat_lock = threading.Lock()
     adapter._heartbeat_interval = 5.0
 
-    mock_client = MagicMock(spec=MessageQueueClient)
+    mock_client = MagicMock(spec=MultiprocessGrpcClient)
     mock_future = MagicMock()
     mock_future.result.return_value = None  # LOOKUP returns None
     mock_client.submit_request.return_value = mock_future
@@ -411,7 +412,7 @@ def test_server_free_lookup_locks_honors_the_session_lock_model():
     releasing an unlocked group would drop another request's lock on the
     shared object key."""
     # First Party
-    from lmcache.v1.multiprocess.modules.lookup import LookupModule
+    from lmcache.v1.multiprocess.services.lookup import LookupModule
 
     hashes = [b"h0", b"h1", b"h2"]
     ctx = _make_free_locks_ctx(
@@ -421,7 +422,7 @@ def test_server_free_lookup_locks_honors_the_session_lock_model():
     key = _free_locks_key(768, 0, 768)
 
     with patch(
-        "lmcache.v1.multiprocess.modules.lookup.ipc_key_to_object_keys",
+        "lmcache.v1.multiprocess.services.lookup.ipc_key_to_object_keys",
         side_effect=lambda k, hs, gids: [[f"g{gids[0]}-{h.decode()}" for h in hs]],
     ):
         module.free_lookup_locks(key, 1)

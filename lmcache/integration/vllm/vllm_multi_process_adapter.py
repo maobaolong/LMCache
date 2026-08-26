@@ -11,7 +11,6 @@ import uuid
 
 # Third Party
 import torch
-import zmq
 
 # First Party
 from lmcache import torch_dev
@@ -27,8 +26,8 @@ from lmcache.v1.multiprocess.group_view import (
     EngineGroupInfo,
     expand_engine_block_ids,
 )
-from lmcache.v1.multiprocess.mq import MessageQueueClient, MessagingFuture
-from lmcache.v1.multiprocess.protocol import RequestType, get_response_class
+from lmcache.v1.multiprocess.mq import MessagingFuture, MultiprocessGrpcClient
+from lmcache.v1.multiprocess.protocol import RPC, RpcMethod, get_response_class
 from lmcache.v1.multiprocess.transfer_context import (
     EngineDrivenTransferContext,
     TransferContext,
@@ -50,7 +49,7 @@ class ExtraConfigDefault(enum.Enum):
     and its *value* is the default.
     """
 
-    # Timeout (seconds) for blocking MQ requests: initial
+    # Timeout (seconds) for blocking gRPC requests: initial
     # chunk-size query, KV cache registration/unregistration,
     # and other synchronous operations.
     mq_timeout = 300.0
@@ -138,15 +137,15 @@ class _IpcEvent(Protocol):
 
 
 def send_lmcache_request(
-    mq_client: MessageQueueClient,
-    request_type: RequestType,
+    mq_client: MultiprocessGrpcClient,
+    request_type: RpcMethod,
     payloads: list[Any],
 ) -> MessagingFuture[Any]:
     """
     Helper function to send the request to the LMCache multiprocess server
 
     Args:
-        mq_client: The LMCache multiprocess mode message queue client
+        mq_client: The LMCache multiprocess mode gRPC client.
         request_type: The request type
         payloads: The request payloads
 
@@ -161,38 +160,38 @@ def send_lmcache_request(
 
 
 def get_lmcache_chunk_size(
-    mq_client: MessageQueueClient,
+    mq_client: MultiprocessGrpcClient,
     timeout: float = DEFAULT_MQ_TIMEOUT,
 ) -> int:
     """
     Helper function to get the LMCache chunk size from the server
 
     Args:
-        mq_client: The LMCache multiprocess mode message queue client
+        mq_client: The LMCache multiprocess mode gRPC client.
         timeout: Timeout in seconds for the blocking request.
 
     Returns:
         An integer representing the LMCache chunk size
     """
-    future = send_lmcache_request(mq_client, RequestType.GET_CHUNK_SIZE, [])
+    future = send_lmcache_request(mq_client, RPC.GetChunkSize, [])
     lmcache_tokens_per_chunk = future.result(timeout=timeout)
     return lmcache_tokens_per_chunk
 
 
 def get_experimental(
-    mq_client: MessageQueueClient,
+    mq_client: MultiprocessGrpcClient,
     timeout: float = DEFAULT_MQ_TIMEOUT,
 ) -> set[str]:
     """Query the experimental capabilities a server advertises.
 
     Args:
-        mq_client: The LMCache multiprocess mode message queue client.
+        mq_client: The LMCache multiprocess mode gRPC client.
         timeout: Seconds to wait for the server's response.
 
     Returns:
         Experimental features built into the server (now `transfer_query`).
     """
-    future = send_lmcache_request(mq_client, RequestType.GET_EXPERIMENTAL, [])
+    future = send_lmcache_request(mq_client, RPC.GetExperimental, [])
     try:
         return set(future.result(timeout=timeout))
     except TimeoutError:
@@ -235,14 +234,14 @@ def _raise_server_unreachable(server_url: str, timeout: float) -> NoReturn:
 
 
 def send_ping(
-    mq_client: MessageQueueClient,
+    mq_client: MultiprocessGrpcClient,
     timeout: float,
     instance_id: int | None = None,
 ) -> bool:
     """Send a PING request and return the result.
 
     Args:
-        mq_client: The message queue client.
+        mq_client: The gRPC client.
         timeout: Seconds to wait for the server's response.
         instance_id: The worker's instance ID so the server can refresh its
             liveness, or None for an untracked prober (scheduler adapter).
@@ -251,7 +250,7 @@ def send_ping(
         True if server is healthy, False on timeout or error.
     """
     try:
-        future = send_lmcache_request(mq_client, RequestType.PING, [instance_id])
+        future = send_lmcache_request(mq_client, RPC.Ping, [instance_id])
         return future.result(timeout=timeout)
     except TimeoutError:
         return False
@@ -335,7 +334,7 @@ def _normalize_adapter_init_args(
             legacy KV worker id from older vLLM MP connectors.
         legacy_block_size: The legacy vLLM block size passed positionally by
             older vLLM MP connectors.
-        mq_timeout: Timeout in seconds for synchronous message queue requests.
+        mq_timeout: Timeout in seconds for synchronous gRPC requests.
 
     Returns:
         A tuple of normalized ``(vllm_block_size, parallel_strategy,
@@ -375,14 +374,14 @@ class HeartbeatThread(PeriodicThread):
 
     def __init__(
         self,
-        mq_client: MessageQueueClient,
+        mq_client: MultiprocessGrpcClient,
         health_event: threading.Event,
         interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         instance_id: int | None = None,
     ):
         """
         Args:
-            mq_client: The message queue client used to send PING requests.
+            mq_client: The gRPC client used to send PING requests.
             health_event: A threading.Event shared with the adapter.
                 Set when the server is healthy, cleared when unhealthy.
                 Adapters check this event to decide whether to proceed
@@ -530,7 +529,7 @@ class LMCacheMPSchedulerAdapter:
     def __init__(
         self,
         server_urls: list[str],
-        context: zmq.Context,
+        context: Any,
         model_name: str,
         vllm_block_size: int,
         parallel_strategy: ParallelStrategy | int,
@@ -542,8 +541,8 @@ class LMCacheMPSchedulerAdapter:
     ):
         """
         Args:
-            server_urls: The servers URL for the LMCache message queue
-            context: The ZMQ context
+            server_urls: The server URLs for LMCache multiprocess gRPC.
+            context: Legacy transport context slot, ignored by gRPC.
             model_name: The model name used for LMCache keys
             vllm_block_size: The block size used in vLLM
             parallel_strategy:
@@ -552,7 +551,7 @@ class LMCacheMPSchedulerAdapter:
                 connectors pass the KV worker id here.
             legacy_block_size: The vLLM block size passed positionally by
                 older vLLM connectors.
-            mq_timeout: Timeout in seconds for message queue requests.
+            mq_timeout: Timeout in seconds for gRPC requests.
                 Ignored when ``extra_config`` is provided.
             heartbeat_interval: Interval in seconds between heartbeat pings.
                 Ignored when ``extra_config`` is provided.
@@ -560,6 +559,7 @@ class LMCacheMPSchedulerAdapter:
                 ``lmcache.mp.`` (e.g., ``lmcache.mp.mq_timeout``). When
                 provided, it overrides ``mq_timeout`` / ``heartbeat_interval``.
         """
+        del context
         vllm_block_size, parallel_strategy, mq_timeout = _normalize_adapter_init_args(
             vllm_block_size,
             parallel_strategy,
@@ -568,8 +568,8 @@ class LMCacheMPSchedulerAdapter:
         )
         assert len(server_urls) >= 1, "At least one server url required"
         self._server_urls: list[str] = list(server_urls)
-        self.mq_clients: dict[str, MessageQueueClient] = {
-            url: MessageQueueClient(url, context) for url in self._server_urls
+        self.mq_clients: dict[str, MultiprocessGrpcClient] = {
+            url: MultiprocessGrpcClient(url) for url in self._server_urls
         }
         if extra_config is not None:
             cfg = _resolve_extra_config(extra_config)
@@ -725,7 +725,7 @@ class LMCacheMPSchedulerAdapter:
         futures: dict[str, MessagingFuture[Any]] = {
             url: send_lmcache_request(
                 self.mq_clients[url],
-                RequestType.LOOKUP,
+                RPC.Lookup,
                 [key, self.tp_size],
             )
             for url in self._server_urls
@@ -782,7 +782,7 @@ class LMCacheMPSchedulerAdapter:
                 ).no_worker_id_version()
                 send_lmcache_request(
                     self.mq_clients[url],
-                    RequestType.FREE_LOOKUP_LOCKS,
+                    RPC.FreeLookupLocks,
                     [tail_key, self.tp_size],
                 )
 
@@ -826,7 +826,7 @@ class LMCacheMPSchedulerAdapter:
         futures: dict[str, MessagingFuture[Any]] = {
             url: send_lmcache_request(
                 self.mq_clients[url],
-                RequestType.QUERY_PREFETCH_STATUS,
+                RPC.QueryPrefetchStatus,
                 [request_id],
             )
             for url in unresolved_urls
@@ -933,7 +933,7 @@ class LMCacheMPSchedulerAdapter:
         for url in self._server_urls:
             send_lmcache_request(
                 self.mq_clients[url],
-                RequestType.FREE_LOOKUP_LOCKS,
+                RPC.FreeLookupLocks,
                 [base_key, self.tp_size],
             )
 
@@ -949,7 +949,7 @@ class LMCacheMPSchedulerAdapter:
         for url in self._server_urls:
             send_lmcache_request(
                 self.mq_clients[url],
-                RequestType.END_SESSION,
+                RPC.EndSession,
                 [request_id],
             )
 
@@ -972,7 +972,7 @@ class LMCacheMPSchedulerAdapter:
         for url in self._server_urls:
             send_lmcache_request(
                 self.mq_clients[url],
-                RequestType.REPORT_BLOCK_ALLOCATION,
+                RPC.ReportBlockAllocation,
                 [os.getpid(), self.model_name, records],
             )
 
@@ -1034,7 +1034,7 @@ class LMCacheMPWorkerAdapter:
     def __init__(
         self,
         server_url: str,
-        context: zmq.Context,
+        context: Any,
         model_name: str,
         vllm_block_size: int,
         parallel_strategy: ParallelStrategy | int,
@@ -1047,8 +1047,8 @@ class LMCacheMPWorkerAdapter:
         """Initialize the worker adapter for current or legacy vLLM callers.
 
         Args:
-            server_url: The server URL for the LMCache message queue.
-            context: The ZMQ context.
+            server_url: The server URL for LMCache multiprocess gRPC.
+            context: Legacy transport context slot, ignored by gRPC.
             model_name: The model name used for LMCache keys.
             vllm_block_size: The block size used in vLLM, or legacy KV world
                 size when ``parallel_strategy`` is an int.
@@ -1056,7 +1056,7 @@ class LMCacheMPWorkerAdapter:
                 legacy KV worker id from older vLLM connectors.
             legacy_block_size: The vLLM block size passed positionally by
                 older vLLM connectors.
-            mq_timeout: Timeout in seconds for message queue requests.
+            mq_timeout: Timeout in seconds for gRPC requests.
                 Ignored when ``extra_config`` is provided.
             heartbeat_interval: Interval in seconds between heartbeat pings.
                 Ignored when ``extra_config`` is provided.
@@ -1067,6 +1067,7 @@ class LMCacheMPWorkerAdapter:
         Raises:
             TypeError: If the connector argument shape is unsupported.
         """
+        del context
         vllm_block_size, parallel_strategy, mq_timeout = _normalize_adapter_init_args(
             vllm_block_size,
             parallel_strategy,
@@ -1090,7 +1091,7 @@ class LMCacheMPWorkerAdapter:
                 self._mp_transfer_mode = None
         else:
             self._mp_transfer_mode = None
-        self.mq_client = MessageQueueClient(server_url, context)
+        self.mq_client = MultiprocessGrpcClient(server_url)
         self._mq_timeout = mq_timeout
 
         # Instance id for GPU worker. uuid4-derived (OS entropy) rather
@@ -1878,9 +1879,9 @@ class LMCacheMPWorkerAdapter:
         logger.info("Unregistering kv caches")
         try:
             unregister_type = (
-                RequestType.UNREGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT
+                RPC.UnregisterKvCacheEngineDrivenContext
                 if isinstance(self.transfer_ctx, EngineDrivenTransferContext)
-                else RequestType.UNREGISTER_KV_CACHE
+                else RPC.UnregisterKvCache
             )
             send_lmcache_request(
                 self.mq_client,

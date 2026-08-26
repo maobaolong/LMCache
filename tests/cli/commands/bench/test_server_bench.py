@@ -33,9 +33,12 @@ from lmcache.v1.multiprocess.custom_types import (
     IPCCacheServerKey,
     RegisterEngineDrivenContextPayload,
 )
-from lmcache.v1.multiprocess.mq import MessageQueueClient, MessageQueueServer
-from lmcache.v1.multiprocess.protocol import get_payload_classes
-from lmcache.v1.multiprocess.protocols.base import HandlerType, RequestType
+from lmcache.v1.multiprocess.mq import (
+    MultiprocessGrpcClient,
+    MultiprocessGrpcServer,
+)
+from lmcache.v1.multiprocess.protocol import RPC, RpcMethod, get_payload_classes
+from lmcache.v1.multiprocess.protocols.base import HandlerType
 from lmcache.v1.multiprocess.protocols.engine import (
     RegisterEngineDrivenContextResponse,
 )
@@ -491,17 +494,17 @@ class _LookupRouter:
         self._in_progress_left = in_progress_polls
         self._hit_chunks = hit_chunks
         self.last_query_request_id: str | None = None
-        self._server = MessageQueueServer(endpoint)
-        request_types = [RequestType.LOOKUP, RequestType.QUERY_PREFETCH_STATUS]
+        self._server = MultiprocessGrpcServer(endpoint)
+        request_types = [RPC.Lookup, RPC.QueryPrefetchStatus]
         self._server.add_handler(
-            RequestType.LOOKUP,
-            get_payload_classes(RequestType.LOOKUP),
+            RPC.Lookup,
+            get_payload_classes(RPC.Lookup),
             HandlerType.BLOCKING,
             self._lookup,
         )
         self._server.add_handler(
-            RequestType.QUERY_PREFETCH_STATUS,
-            get_payload_classes(RequestType.QUERY_PREFETCH_STATUS),
+            RPC.QueryPrefetchStatus,
+            get_payload_classes(RPC.QueryPrefetchStatus),
             HandlerType.BLOCKING,
             self._query_prefetch_status,
         )
@@ -525,8 +528,8 @@ class _LookupRouter:
 
 
 class TestLookupProtocol:
-    def _make_client(self, endpoint: str) -> MessageQueueClient:
-        return MessageQueueClient(endpoint)
+    def _make_client(self, endpoint: str) -> MultiprocessGrpcClient:
+        return MultiprocessGrpcClient(endpoint)
 
     def test_send_lookup_void_reply_is_success(
         self,
@@ -586,18 +589,18 @@ class _UnregisterRouter:
     """
 
     def __init__(self, endpoint: str) -> None:
-        self.last_request_type: RequestType | None = None
+        self.last_request_type: RpcMethod | None = None
         self.last_instance_id: int | None = None
-        self._server = MessageQueueServer(endpoint)
+        self._server = MultiprocessGrpcServer(endpoint)
         self._server.add_handler(
-            RequestType.UNREGISTER_KV_CACHE,
-            get_payload_classes(RequestType.UNREGISTER_KV_CACHE),
+            RPC.UnregisterKvCache,
+            get_payload_classes(RPC.UnregisterKvCache),
             HandlerType.SYNC,
             self._unregister_kv_cache,
         )
         self._server.add_handler(
-            RequestType.UNREGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT,
-            get_payload_classes(RequestType.UNREGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT),
+            RPC.UnregisterKvCacheEngineDrivenContext,
+            get_payload_classes(RPC.UnregisterKvCacheEngineDrivenContext),
             HandlerType.SYNC,
             self._unregister_engine_driven_context,
         )
@@ -609,17 +612,17 @@ class _UnregisterRouter:
         self._server.close()
 
     def _unregister_kv_cache(self, instance_id: int) -> None:
-        self.last_request_type = RequestType.UNREGISTER_KV_CACHE
+        self.last_request_type = RPC.UnregisterKvCache
         self.last_instance_id = instance_id
 
     def _unregister_engine_driven_context(self, instance_id: int) -> None:
-        self.last_request_type = RequestType.UNREGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT
+        self.last_request_type = RPC.UnregisterKvCacheEngineDrivenContext
         self.last_instance_id = instance_id
 
 
 class TestUnregisterKVCache:
-    def _make_client(self, endpoint: str) -> MessageQueueClient:
-        return MessageQueueClient(endpoint)
+    def _make_client(self, endpoint: str) -> MultiprocessGrpcClient:
+        return MultiprocessGrpcClient(endpoint)
 
     def test_handle_mode_sends_unregister_kv_cache(
         self,
@@ -634,7 +637,7 @@ class TestUnregisterKVCache:
                 _send_unregister_kv_cache(client, instance_id=7, use_handle=True)
                 is True
             )
-            assert router.last_request_type == RequestType.UNREGISTER_KV_CACHE
+            assert router.last_request_type == RPC.UnregisterKvCache
             assert router.last_instance_id == 7
             client.close()
         finally:
@@ -653,10 +656,7 @@ class TestUnregisterKVCache:
                 _send_unregister_kv_cache(client, instance_id=0, use_handle=False)
                 is True
             )
-            assert (
-                router.last_request_type
-                == RequestType.UNREGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT
-            )
+            assert router.last_request_type == RPC.UnregisterKvCacheEngineDrivenContext
             assert router.last_instance_id == 0
             client.close()
         finally:
@@ -678,8 +678,8 @@ class _RegisterEngineDrivenRouter:
 
     def __init__(self, endpoint: str) -> None:
         self.last_payload: RegisterEngineDrivenContextPayload | None = None
-        self._server = MessageQueueServer(endpoint)
-        request_type = RequestType.REGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT
+        self._server = MultiprocessGrpcServer(endpoint)
+        request_type = RPC.RegisterKvCacheEngineDrivenContext
         self._server.add_handler(
             request_type,
             get_payload_classes(request_type),
@@ -710,8 +710,8 @@ class TestRegisterKVCacheMLA:
     shape and every STORE / RETRIEVE afterwards would corrupt data.
     """
 
-    def _make_client(self, endpoint: str) -> MessageQueueClient:
-        return MessageQueueClient(endpoint)
+    def _make_client(self, endpoint: str) -> MultiprocessGrpcClient:
+        return MultiprocessGrpcClient(endpoint)
 
     def _register(self, endpoint: str, kv_size):
         # First Party
@@ -946,7 +946,7 @@ class TestProcessRequestMultiWorker:
 
     def _run(self, is_mla: bool, tp_size: int):
         """Drive ``_process_request`` against a mocked ``_call`` and return
-        the sequence of ``(RequestType, worker_id, instance_id)`` tuples
+        the sequence of ``(RpcMethod, worker_id, instance_id)`` tuples
         for the fan-out ops (STORE / RETRIEVE)."""
         # Standard
         from unittest.mock import patch
@@ -968,7 +968,7 @@ class TestProcessRequestMultiWorker:
             success = True
             context: dict = {}
 
-        # ``_call`` returns different shapes per RequestType:
+        # ``_call`` returns different shapes per RpcMethod:
         #   LOOKUP -> None (void)
         #   QUERY_PREFETCH_STATUS -> hit_chunks (int) or None
         #   STORE / RETRIEVE (handle) -> (worker_id, True)

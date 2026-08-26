@@ -30,11 +30,6 @@ from lmcache.v1.distributed.transfer_channel.api import TransferChannelAddress
 from lmcache.v1.mp_observability.otel_init import register_gauge
 from lmcache.v1.multiprocess.config import CoordinatorConfig, P2PConfig
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
-from lmcache.v1.multiprocess.engine_module import (
-    HandlerSpec,
-    ThreadPoolType,
-)
-from lmcache.v1.multiprocess.protocol import RequestType
 from lmcache.v1.periodic_thread import (
     PeriodicThread,
     ThreadLevel,
@@ -104,6 +99,8 @@ class P2PController:
             discovered peer set.
     """
 
+    GRPC_SERVICE_NAMES = ("P2PService",)
+
     def __init__(
         self,
         ctx: MPCacheServerContext,
@@ -160,30 +157,6 @@ class P2PController:
     def context(self) -> MPCacheServerContext:
         """Return the shared engine context. Exposed for testing only."""
         return self._ctx
-
-    def get_handlers(self) -> list[HandlerSpec]:
-        """Return handler specs for all request types this module serves.
-
-        Returns:
-            List of handler specs for lookup-related request types.
-        """
-        return [
-            HandlerSpec(
-                RequestType.P2P_LOOKUP_AND_LOCK,
-                self.p2p_lookup_and_lock,
-                ThreadPoolType.NORMAL,
-            ),
-            HandlerSpec(
-                RequestType.P2P_QUERY_LOOKUP_RESULTS,
-                self.p2p_query_lookup_results,
-                ThreadPoolType.NORMAL,
-            ),
-            HandlerSpec(
-                RequestType.P2P_UNLOCK_OBJECTS,
-                self.p2p_unlock_objects,
-                ThreadPoolType.NORMAL,
-            ),
-        ]
 
     def report_status(self) -> dict[str, object]:
         """Return module-specific status information.
@@ -530,7 +503,7 @@ class P2PController:
             ``True`` if the adapter was created and tracked.
         """
         config = P2PL2AdapterConfig(
-            peer_mq_server_url=f"tcp://{inst.ip}:{inst.mq_port}",
+            peer_mq_server_url=f"grpc://{inst.ip}:{inst.mq_port}",
             peer_transfer_channel_server_url=inst.p2p_advertised_url,
             lookup_timeout_s=self._p2p_config.lookup_timeout,
             load_timeout_s=self._p2p_config.load_timeout,

@@ -37,17 +37,12 @@ from lmcache.v1.multiprocess.custom_types import (
     KVCache,
 )
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
-from lmcache.v1.multiprocess.engine_module import (
-    HandlerSpec,
-    InstanceLivenessTarget,
-    ThreadPoolType,
-)
 from lmcache.v1.multiprocess.group_view import EngineGroupInfo
 from lmcache.v1.multiprocess.native_completion import (
     DeviceHostFuncDispatcher,
     submit_callback_to_stream,
 )
-from lmcache.v1.multiprocess.protocols.base import RequestType
+from lmcache.v1.multiprocess.service import InstanceLivenessTarget
 from lmcache.v1.platform.base.cache_context import BaseCacheContext
 from lmcache.v1.platform.base.event_ipc import (
     EventIPCBackend,
@@ -661,6 +656,8 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
         ctx: The shared engine context.
     """
 
+    GRPC_SERVICE_NAMES = ("EngineService",)
+
     def __init__(self, ctx: MPCacheServerContext) -> None:
         self._ctx = ctx
         self._cache_contexts: dict[int, ContextEntry] = {}
@@ -812,36 +809,6 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
             # Backends without IPC collection omit this optional operation.
             ipc_collect()
 
-    def get_handlers(self) -> list[HandlerSpec]:
-        """Return handler specs for all request types this module serves.
-
-        Returns:
-            A list of HandlerSpec entries mapping request types to
-            their handler callables and thread pool assignments.
-        """
-        return [
-            HandlerSpec(
-                RequestType.REGISTER_KV_CACHE,
-                self.register_kv_cache,
-                ThreadPoolType.SYNC,
-            ),
-            HandlerSpec(
-                RequestType.UNREGISTER_KV_CACHE,
-                self.unregister_kv_cache,
-                ThreadPoolType.SYNC,
-            ),
-            HandlerSpec(
-                RequestType.STORE,
-                self.store,
-                ThreadPoolType.AFFINITY,
-            ),
-            HandlerSpec(
-                RequestType.RETRIEVE,
-                self.retrieve,
-                ThreadPoolType.AFFINITY,
-            ),
-        ]
-
     def report_status(self) -> dict:
         """Return GPU transfer module status information.
 
@@ -899,8 +866,8 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
                 Forwarded to GPUCacheContext for format detection.
             layout_hints: See LayoutHints.  Forwarded to
                 GPUCacheContext for GPU KV format detection.
-            engine_group_infos: Engine-neutral KV cache group metadata
-                (already msgspec-decoded by the message queue).
+            engine_group_infos: Engine-neutral KV cache group metadata decoded
+                from the typed gRPC request.
         """
         now = time.monotonic()
         # NOOP-register: an already-registered instance (e.g. a recovering

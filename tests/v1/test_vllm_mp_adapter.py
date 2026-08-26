@@ -26,7 +26,7 @@ from lmcache.integration.vllm.vllm_multi_process_adapter import (
     ParallelStrategy,
 )
 from lmcache.v1.multiprocess.group_view import EngineGroupInfo
-from lmcache.v1.multiprocess.protocol import RequestType
+from lmcache.v1.multiprocess.protocol import RPC, RpcMethod
 
 
 class FakeCudaEvent:
@@ -151,7 +151,9 @@ def fake_adapter(monkeypatch):
     # Stub the MQ boundary so __init__'s chunk-size query and any later
     # send_lmcache_request call don't touch a real socket.
     fake_client = MagicMock(name="mq_client")
-    monkeypatch.setattr(adapter_mod, "MessageQueueClient", lambda *a, **kw: fake_client)
+    monkeypatch.setattr(
+        adapter_mod, "MultiprocessGrpcClient", lambda *a, **kw: fake_client
+    )
     monkeypatch.setattr(adapter_mod, "get_lmcache_chunk_size", lambda *a, **kw: 256)
     monkeypatch.setattr(adapter_mod, "get_experimental", lambda *a, **kw: set())
 
@@ -199,7 +201,7 @@ def test_register_kv_caches_updates_kv_caches_and_submits(fake_adapter):
     assert adapter.kv_caches is new_caches
     assert send_mock.call_count == 1
     args, _kwargs = send_mock.call_args
-    assert args[1] == RequestType.REGISTER_KV_CACHE
+    assert args[1] == RPC.RegisterKvCache
 
 
 def test_register_kv_caches_raises_connection_error_on_timeout(fake_adapter):
@@ -230,7 +232,7 @@ def test_register_kv_caches_cpu_submits_engine_driven_context_registration(
     assert adapter.kv_caches is cpu_kv
     assert send_mock.call_count == 1
     args, _kwargs = send_mock.call_args
-    assert args[1] == RequestType.REGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT
+    assert args[1] == RPC.RegisterKvCacheEngineDrivenContext
     assert len(args[2]) == 1
 
 
@@ -536,9 +538,9 @@ def test_shutdown_stops_heartbeat_before_unregister(fake_adapter) -> None:
     stop_state_at_unregister: list[bool] = []
 
     def record_send(
-        mq_client: object, request_type: RequestType, payloads: list[object]
+        mq_client: object, request_type: RpcMethod, payloads: list[object]
     ) -> MagicMock:
-        if request_type == RequestType.UNREGISTER_KV_CACHE:
+        if request_type == RPC.UnregisterKvCache:
             stop_state_at_unregister.append(heartbeat.stop_requested)
         return future
 
@@ -561,7 +563,7 @@ def test_shutdown_without_heartbeat_sends_unregister(fake_adapter) -> None:
     assert FakeHeartbeatThread.instances == []
     assert send_mock.call_count == 1
     args, _kwargs = send_mock.call_args
-    assert args[1] == RequestType.UNREGISTER_KV_CACHE
+    assert args[1] == RPC.UnregisterKvCache
     assert args[2] == [adapter.instance_id]
 
 
@@ -651,7 +653,9 @@ def test_register_uses_local_context_when_self_transfer_ctx_nulled(
             pass
 
     fake_client = MagicMock(name="mq_client")
-    monkeypatch.setattr(adapter_mod, "MessageQueueClient", lambda *a, **kw: fake_client)
+    monkeypatch.setattr(
+        adapter_mod, "MultiprocessGrpcClient", lambda *a, **kw: fake_client
+    )
     monkeypatch.setattr(adapter_mod, "get_lmcache_chunk_size", lambda *a, **kw: 256)
     monkeypatch.setattr(adapter_mod, "get_experimental", lambda *a, **kw: set())
     future = MagicMock(name="future")

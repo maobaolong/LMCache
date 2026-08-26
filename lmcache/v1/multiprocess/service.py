@@ -1,50 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Protocol and types for pluggable engine modules."""
+"""Protocol and types for pluggable server services."""
 
 # Future
 from __future__ import annotations
 
 # Standard
-from dataclasses import dataclass
-from enum import Enum, auto
-from typing import TYPE_CHECKING, Callable, Protocol
-
-# First Party
-from lmcache.v1.multiprocess.protocol import RequestType
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     # First Party
     from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
 
 
-class ThreadPoolType(Enum):
-    """Declares which thread pool a handler should run in."""
+class MPService(Protocol):
+    """Protocol for pluggable server services.
 
-    SYNC = auto()
-    AFFINITY = auto()
-    NORMAL = auto()
-
-
-@dataclass
-class HandlerSpec:
-    """Specification for a single message queue handler.
-
-    Args:
-        request_type: The ZMQ request type this handler serves.
-        handler: The callable that processes the request.
-        pool: Which thread pool the handler runs in.
-    """
-
-    request_type: RequestType
-    handler: Callable
-    pool: ThreadPoolType
-
-
-class EngineModule(Protocol):
-    """Protocol for pluggable engine modules.
-
-    Each module owns its internal state and exposes handlers
-    that the compositor registers with the message queue server.
+    Each service owns its internal state and declares which generated gRPC
+    service descriptors it implements. The transport discovers concrete
+    handler methods from those descriptors by converting gRPC method names to
+    snake_case method names, with optional class-level aliases for Python
+    method names that intentionally differ.
     """
 
     @property
@@ -52,34 +27,30 @@ class EngineModule(Protocol):
         """Return the shared engine context. Exposed for testing only."""
         ...
 
-    def get_handlers(self) -> list[HandlerSpec]:
-        """Return handler specs for all request types this module serves."""
-        ...
-
     def report_status(self) -> dict:
-        """Return module-specific status information."""
+        """Return service-specific status information."""
         ...
 
     def close(self) -> None:
-        """Release resources owned by this module."""
+        """Release resources owned by this service."""
         ...
 
 
 class InstanceLivenessTarget(Protocol):
-    """A module the periodic reaper drives, in either or both of two roles.
+    """A service the periodic reaper drives, in either or both of two roles.
 
     * **Liveness owner** -- tracks per-worker registrations keyed by
       ``instance_id``, refreshed on PING and scanned for staleness
       (``touch_instance`` / ``reap_stale_instances`` /
-      ``tracked_instance_count``). The transfer modules fill this role.
+      ``tracked_instance_count``). The transfer services fill this role.
     * **State mirror** -- holds a second reference to a reaped instance's
       resources and releases it on demand (``drop_instance_state``).
       ``BlendV3Module`` fills this role for its per-instance CB state.
 
     Every method defaults to a no-op, so an implementer subclasses this
-    protocol and overrides only the role it fills. The management module
+    protocol and overrides only the role it fills. The management service
     drives all targets from the PING handler and the reaper; no caller
-    touches a module's private state directly.
+    touches a service's private state directly.
     """
 
     def touch_instance(self, instance_id: int) -> None:

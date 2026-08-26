@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Blend V3: paged-aware CacheBlend as an EngineModule.
+"""Blend V3: paged-aware CacheBlend as an MPService.
 
 Plugs into the unified MPCacheServer; standard REGISTER_KV_CACHE +
 CB_REGISTER_ROPE_V3 for setup; STORE wrapper registers fingerprints;
@@ -51,16 +51,11 @@ from lmcache.v1.multiprocess.custom_types import (
     IPCCacheServerKey,
 )
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
-from lmcache.v1.multiprocess.engine_module import (
-    HandlerSpec,
-    InstanceLivenessTarget,
-    ThreadPoolType,
-)
-from lmcache.v1.multiprocess.modules.lmcache_driven_transfer import (
+from lmcache.v1.multiprocess.service import InstanceLivenessTarget
+from lmcache.v1.multiprocess.services.lmcache_driven_transfer import (
     LMCacheDrivenTransferModule,
 )
-from lmcache.v1.multiprocess.modules.lookup import compute_extra_count
-from lmcache.v1.multiprocess.protocol import RequestType
+from lmcache.v1.multiprocess.services.lookup import compute_extra_count
 from lmcache.v1.multiprocess.token_hasher import (
     TokenHasher,
     chunk_hash_windows_numba,
@@ -674,6 +669,13 @@ class BlendV3Module(InstanceLivenessTarget):
     fingerprints; serves CB rope/lookup/retrieve RPCs; reads cross-module
     GPU state via :class:`LMCacheDrivenTransferModule.cache_contexts`."""
 
+    GRPC_SERVICE_NAMES = ("EngineService", "BlendV3Service")
+    GRPC_METHOD_ALIASES = {
+        "CbRegisterRopeV3": "cb_register_rope",
+        "CbUnregisterRopeV3": "cb_unregister_rope",
+        "CbRetrievePreComputedV3": "cb_retrieve_pre_computed",
+    }
+
     def __init__(
         self,
         ctx: MPCacheServerContext,
@@ -755,38 +757,12 @@ class BlendV3Module(InstanceLivenessTarget):
         self._STALE_STRIKE_THRESHOLD = 2
 
     # ------------------------------------------------------------------
-    # EngineModule protocol
+    # MPService protocol
     # ------------------------------------------------------------------
 
     @property
     def context(self) -> MPCacheServerContext:
         return self._ctx
-
-    def get_handlers(self) -> list[HandlerSpec]:
-        # STORE shadows LMCacheDrivenTransfer's; compositor registers V3 last.
-        return [
-            HandlerSpec(RequestType.STORE, self.store, ThreadPoolType.AFFINITY),
-            HandlerSpec(
-                RequestType.CB_REGISTER_ROPE_V3,
-                self.cb_register_rope,
-                ThreadPoolType.SYNC,
-            ),
-            HandlerSpec(
-                RequestType.CB_UNREGISTER_ROPE_V3,
-                self.cb_unregister_rope,
-                ThreadPoolType.SYNC,
-            ),
-            HandlerSpec(
-                RequestType.CB_UNIFIED_LOOKUP,
-                self.cb_unified_lookup,
-                ThreadPoolType.NORMAL,
-            ),
-            HandlerSpec(
-                RequestType.CB_RETRIEVE_PRE_COMPUTED_V3,
-                self.cb_retrieve_pre_computed,
-                ThreadPoolType.AFFINITY,
-            ),
-        ]
 
     def report_status(self) -> dict:
         # Meta is derived live from MP server gpu_transfe

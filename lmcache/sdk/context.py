@@ -14,7 +14,6 @@ import uuid
 # Third Party
 import requests
 import torch
-import zmq
 
 # First Party
 from lmcache.logging import init_logger
@@ -27,8 +26,8 @@ from lmcache.v1.gpu_connector.utils import (
     get_num_heads,
 )
 from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey
-from lmcache.v1.multiprocess.mq import MessageQueueClient
-from lmcache.v1.multiprocess.protocol import RequestType, get_response_class
+from lmcache.v1.multiprocess.mq import MultiprocessGrpcClient
+from lmcache.v1.multiprocess.protocol import RPC, get_response_class
 from lmcache.v1.multiprocess.transfer_context.worker_transfer import (
     EngineDrivenTransferContext,
     create_transfer_context,
@@ -50,7 +49,7 @@ ModifyFnType = Callable[
 
 class LMCacheSDKContext:
     """
-    Retrieve and store KV cache tensors via LMCache's MQ endpoints.
+    Retrieve and store KV cache tensors via LMCache's gRPC endpoints.
 
     The model layout must already be registered in the running LMCache server
     (e.g. by a vllm instance that called REGISTER_KV_CACHE).
@@ -73,18 +72,17 @@ class LMCacheSDKContext:
         Initialize the SDK context and register the SDK transfer strategy.
 
         Args:
-            url: ZMQ endpoint URL for the LMCache message queue.
+            url: gRPC endpoint URL for the LMCache multiprocess server.
             http_url: HTTP endpoint URL for fetching information.
             model_name: Model name used by the running LMCache server instance.
             kind: The type of cache.
-            timeout: Timeout in seconds for blocking MQ calls. Defaults to 60.
+            timeout: Timeout in seconds for blocking RPC calls. Defaults to 60.
 
         Returns:
             LMCacheSDKContext instance.
         """
         self._kind = kind
-        self._zmq_context = zmq.Context()
-        self._mq_client = MessageQueueClient(url, self._zmq_context)
+        self._mq_client = MultiprocessGrpcClient(url)
         self._mq_timeout = timeout
         self._model_name = kind.server_model_name(model_name)
         self.instance_id = uuid.uuid4().int & ((1 << 63) - 1)
@@ -258,7 +256,7 @@ class LMCacheSDKContext:
 
     @property
     def mq_timeout(self) -> float:
-        """Return the message queue timeout of the context."""
+        """Return the RPC timeout of the context."""
         return self._mq_timeout
 
     @property
@@ -267,7 +265,7 @@ class LMCacheSDKContext:
         return self._transfer_ctx
 
     def close(self) -> None:
-        """Close the MQ client and ZMQ context."""
+        """Close the gRPC client."""
         self._mq_client.close()
 
     def maybe_submit_lookup_request(
@@ -301,9 +299,9 @@ class LMCacheSDKContext:
         ).no_worker_id_version()
 
         future = self._mq_client.submit_request(
-            RequestType.LOOKUP,
+            RPC.Lookup,
             [key, self._world_size],
-            get_response_class(RequestType.LOOKUP),
+            get_response_class(RPC.Lookup),
         )
         try:
             future.result(timeout=self._mq_timeout)
@@ -339,9 +337,9 @@ class LMCacheSDKContext:
 
         try:
             result = self._mq_client.submit_request(
-                RequestType.QUERY_PREFETCH_STATUS,
+                RPC.QueryPrefetchStatus,
                 [request_id],
-                get_response_class(RequestType.QUERY_PREFETCH_STATUS),
+                get_response_class(RPC.QueryPrefetchStatus),
             ).result(timeout=self._mq_timeout)
         except TimeoutError:
             logger.warning(
@@ -368,9 +366,9 @@ class LMCacheSDKContext:
         self._finished_lookups.pop(request_id, None)
         try:
             self._mq_client.submit_request(
-                RequestType.END_SESSION,
+                RPC.EndSession,
                 [request_id],
-                get_response_class(RequestType.END_SESSION),
+                get_response_class(RPC.EndSession),
             ).result(timeout=self._mq_timeout)
         except TimeoutError:
             logger.warning(

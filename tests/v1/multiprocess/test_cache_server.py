@@ -25,9 +25,9 @@ from lmcache.v1.multiprocess.custom_types import (
     IPCCacheServerKey,
     KVCache,
 )
-from lmcache.v1.multiprocess.mq import MessageQueueClient
+from lmcache.v1.multiprocess.mq import MultiprocessGrpcClient
 from lmcache.v1.multiprocess.protocol import (
-    RequestType,
+    RPC,
     get_response_class,
 )
 from lmcache.v1.multiprocess.server import run_cache_server
@@ -156,7 +156,7 @@ BLOCKS_PER_KEY = 16
 
 
 def lookup_all(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
     keys: list[IPCCacheServerKey],
     timeout: float = DEFAULT_TIMEOUT,
 ) -> int:
@@ -170,16 +170,16 @@ def lookup_all(
         lookup_key = key.no_worker_id_version()
         # Phase 1: Submit lookup (server tracks by request_id, returns None)
         client.submit_request(
-            RequestType.LOOKUP,
+            RPC.Lookup,
             [lookup_key, 1],
-            get_response_class(RequestType.LOOKUP),
+            get_response_class(RPC.Lookup),
         ).result(timeout=timeout)
         # Phase 2: Poll by request_id until done
         while True:
             result = client.submit_request(
-                RequestType.QUERY_PREFETCH_STATUS,
+                RPC.QueryPrefetchStatus,
                 [lookup_key.request_id],
-                get_response_class(RequestType.QUERY_PREFETCH_STATUS),
+                get_response_class(RPC.QueryPrefetchStatus),
             ).result(timeout=timeout)
             if result is not None:
                 total += result
@@ -188,7 +188,7 @@ def lookup_all(
 
 
 def store_keys(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
     keys: list[IPCCacheServerKey],
     instance_id: int,
     gpu_block_ids: list[int],
@@ -201,16 +201,16 @@ def store_keys(
         end = start + BLOCKS_PER_KEY
         block_ids = gpu_block_ids[start:end]
         future = client.submit_request(
-            RequestType.STORE,
+            RPC.Store,
             [key, instance_id, [block_ids], event.ipc_handle()],
-            get_response_class(RequestType.STORE),
+            get_response_class(RPC.Store),
         )
         result = future.to_device_future().result(timeout=timeout)
         assert result is True, f"Store should succeed for key {i}"
 
 
 def retrieve_keys(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
     keys: list[IPCCacheServerKey],
     instance_id: int,
     gpu_block_ids: list[int],
@@ -224,9 +224,9 @@ def retrieve_keys(
         end = start + BLOCKS_PER_KEY
         block_ids = gpu_block_ids[start:end]
         future = client.submit_request(
-            RequestType.RETRIEVE,
+            RPC.Retrieve,
             [key, instance_id, [block_ids], event.ipc_handle(), 0],
-            get_response_class(RequestType.RETRIEVE),
+            get_response_class(RPC.Retrieve),
         )
         result = future.to_device_future().result(timeout=timeout)
         results.append(result)
@@ -298,11 +298,11 @@ def zmq_context() -> Generator[zmq.Context, None, None]:
 @pytest.fixture(scope="function")
 def client(
     server_process: mp.Process, zmq_context: zmq.Context
-) -> Generator[MessageQueueClient, None, None]:
+) -> Generator[MultiprocessGrpcClient, None, None]:
     """
     Fixture that provides a message queue client for each test function.
     """
-    client = MessageQueueClient(server_url=SERVER_URL, context=zmq_context)
+    client = MultiprocessGrpcClient(server_url=SERVER_URL, context=zmq_context)
     yield client
     # Client cleanup
     client.close()
@@ -324,7 +324,7 @@ def client_context() -> Generator[ClientContext, None, None]:
 
 @pytest.fixture(scope="function")
 def registered_instance(
-    client: MessageQueueClient, client_context: ClientContext
+    client: MultiprocessGrpcClient, client_context: ClientContext
 ) -> Generator[int, None, None]:
     """
     Fixture that registers a KV cache instance and returns the instance ID.
@@ -336,7 +336,7 @@ def registered_instance(
     # detects ``slots_per_block`` from the tensors and treats every group
     # as uncompressed (``compress_ratio == 1``).
     future = client.submit_request(
-        RequestType.REGISTER_KV_CACHE,
+        RPC.RegisterKvCache,
         [
             instance_id,
             client_context.get_kv_cache(),
@@ -346,7 +346,7 @@ def registered_instance(
             {},
             [],
         ],
-        get_response_class(RequestType.REGISTER_KV_CACHE),
+        get_response_class(RPC.RegisterKvCache),
     )
     result = future.result(timeout=DEFAULT_TIMEOUT)
     assert result is None, "Register should return None"
@@ -355,13 +355,13 @@ def registered_instance(
 
     # Unregister KV cache
     try:
-        client.submit_request(
-            RequestType.CLEAR, [], get_response_class(RequestType.CLEAR)
-        ).result(timeout=DEFAULT_TIMEOUT)
+        client.submit_request(RPC.Clear, [], get_response_class(RPC.Clear)).result(
+            timeout=DEFAULT_TIMEOUT
+        )
         future = client.submit_request(
-            RequestType.UNREGISTER_KV_CACHE,
+            RPC.UnregisterKvCache,
             [instance_id],
-            get_response_class(RequestType.UNREGISTER_KV_CACHE),
+            get_response_class(RPC.UnregisterKvCache),
         )
         future.result(timeout=DEFAULT_TIMEOUT)
     except Exception as e:
@@ -381,7 +381,7 @@ def test_server_running(server_process: mp.Process):
 
 
 def test_register_unregister_kv_cache(
-    client: MessageQueueClient, client_context: ClientContext
+    client: MultiprocessGrpcClient, client_context: ClientContext
 ):
     """
     Test registering and unregistering a KV cache.
@@ -391,7 +391,7 @@ def test_register_unregister_kv_cache(
     # Register. No engine group infos: geometry is detected from the
     # tensors (uncompressed).
     future = client.submit_request(
-        RequestType.REGISTER_KV_CACHE,
+        RPC.RegisterKvCache,
         [
             instance_id,
             client_context.get_kv_cache(),
@@ -401,23 +401,23 @@ def test_register_unregister_kv_cache(
             {},
             [],
         ],
-        get_response_class(RequestType.REGISTER_KV_CACHE),
+        get_response_class(RPC.RegisterKvCache),
     )
     result = future.result(timeout=DEFAULT_TIMEOUT)
     assert result is None
 
     # Unregister
     future = client.submit_request(
-        RequestType.UNREGISTER_KV_CACHE,
+        RPC.UnregisterKvCache,
         [instance_id],
-        get_response_class(RequestType.UNREGISTER_KV_CACHE),
+        get_response_class(RPC.UnregisterKvCache),
     )
     result = future.result(timeout=DEFAULT_TIMEOUT)
     assert result is None
 
 
 def test_store_and_lookup(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
     client_context: ClientContext,
     registered_instance: int,
 ):
@@ -444,7 +444,7 @@ def test_store_and_lookup(
 
 
 def test_store_fails_closed_on_incomplete_block_ids(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
     client_context: ClientContext,
     registered_instance: int,
 ):
@@ -469,14 +469,14 @@ def test_store_fails_closed_on_incomplete_block_ids(
 
     result = (
         client.submit_request(
-            RequestType.STORE,
+            RPC.Store,
             [
                 key,
                 registered_instance,
                 [list(range(BLOCKS_PER_KEY // 2))],
                 event.ipc_handle(),
             ],
-            get_response_class(RequestType.STORE),
+            get_response_class(RPC.Store),
         )
         .to_device_future()
         .result(timeout=DEFAULT_TIMEOUT)
@@ -486,7 +486,7 @@ def test_store_fails_closed_on_incomplete_block_ids(
 
 
 def test_store_retrieve_verify(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
     client_context: ClientContext,
     registered_instance: int,
 ):
@@ -539,7 +539,7 @@ def test_store_retrieve_verify(
 
 
 def test_retrieve_partial_miss(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
     client_context: ClientContext,
     registered_instance: int,
 ):
@@ -600,7 +600,7 @@ def test_retrieve_partial_miss(
 
 
 def test_multiple_retrieve_operations(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
     client_context: ClientContext,
     registered_instance: int,
 ):
@@ -683,7 +683,7 @@ def test_multiple_retrieve_operations(
 
 
 def test_multiple_store_operations(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
     client_context: ClientContext,
     registered_instance: int,
 ):
@@ -711,15 +711,15 @@ def test_multiple_store_operations(
 
 
 def test_get_chunk_size(
-    client: MessageQueueClient,
+    client: MultiprocessGrpcClient,
 ):
     """
     Test retrieving the chunk size from the server.
     """
     chunk_size = client.submit_request(
-        RequestType.GET_CHUNK_SIZE,
+        RPC.GetChunkSize,
         [],
-        get_response_class(RequestType.GET_CHUNK_SIZE),
+        get_response_class(RPC.GetChunkSize),
     ).result(timeout=DEFAULT_TIMEOUT)
 
     assert chunk_size == CHUNK_SIZE, f"Chunk size should be {CHUNK_SIZE}"

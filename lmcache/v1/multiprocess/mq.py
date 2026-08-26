@@ -1,22 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-"""LMCache mp-mode message queue, backed by gRPC.
+"""LMCache mp-mode gRPC transport.
 
-Each ``RequestType`` maps to a distinct typed unary RPC method on the
-``MessageQueue`` service defined in ``proto/lmcache_mq.proto``. Concurrent
-control-plane calls may share a typed micro-batch. The old msgspec envelope
-(uid + request type + payload frames) is gone; gRPC method routing and protobuf
+Each RPC method maps to a distinct typed unary gRPC method on one of the
+services defined in ``proto/lmcache_mq.proto``. Concurrent control-plane calls
+go directly over typed unary RPCs. The old msgspec envelope (uid + request type
++ payload frames) is gone; gRPC service/method routing and protobuf
 request/response messages now define the wire protocol.
 """
 
 # Standard
-from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, Optional, TypeVar, get_type_hints
+from typing import Any, Callable, Generic, Optional, Sequence, TypeVar, get_type_hints
 from urllib.parse import parse_qs, urlparse
 import inspect
 import threading
-import time
 import uuid
 
 # First Party
@@ -26,11 +24,16 @@ from lmcache.v1.multiprocess.futures import (
     MessagingFuture,
 )
 from lmcache.v1.multiprocess.protocol import (
+    RPC_METHODS,
     HandlerType,
-    RequestType,
+    RpcMethod,
+    coerce_rpc_method,
+    get_handler_type,
     get_payload_classes,
     get_response_class,
+    requires_client_affinity,
 )
+from lmcache.v1.multiprocess.service import MPService
 from lmcache.v1.multiprocess.transport.grpc_impl._proto_gen import (
     lmcache_mq_pb2 as _pb2_typed,
 )
@@ -70,28 +73,7 @@ _GRPC_UNLIMITED_MSG_OPTS: list[tuple[str, int]] = [
     ("grpc.max_send_message_length", -1),
     ("grpc.max_receive_message_length", -1),
 ]
-# Amortize one gRPC exchange across concurrent control-plane callers. Single
-# callers bypass Batch entirely, so this window does not delay unary traffic.
-_GRPC_BATCH_COALESCE_SECONDS = 150 / 1_000_000
-_GRPC_BATCH_MAX_ITEMS = 64
-_GRPC_BATCH_MAX_ITEM_BYTES = 64 * 1024
 _GRPC_CLIENT_ID_METADATA_KEY = "lmcache-client-id-bin"
-# Data-plane and staged transfer operations retain dedicated unary calls because
-# they may carry large payloads or depend on per-call affinity and ordering.
-_GRPC_BATCH_UNSAFE_REQUEST_TYPES = {
-    RequestType.STORE,
-    RequestType.STORE_Q,
-    RequestType.RETRIEVE,
-    RequestType.PREPARE_STORE,
-    RequestType.COMMIT_STORE,
-    RequestType.PREPARE_RETRIEVE,
-    RequestType.COMMIT_RETRIEVE,
-    RequestType.CB_STORE_PRE_COMPUTED,
-    RequestType.CB_STORE_FINAL,
-    RequestType.CB_RETRIEVE_PRE_COMPUTED,
-    RequestType.CB_RETRIEVE_PRE_COMPUTED_V2,
-    RequestType.CB_RETRIEVE_PRE_COMPUTED_V3,
-}
 
 
 def _ensure_grpc_runtime() -> None:
@@ -117,10 +99,36 @@ def _ensure_grpc_runtime() -> None:
 
 
 _RPC_METHOD_NAMES = {
-    request_type: request_type_to_method_name(request_type)
-    for request_type in RequestType
+    rpc_method: request_type_to_method_name(rpc_method) for rpc_method in RPC_METHODS
 }
-_RPC_REQUEST_TYPES = {request_type.value: request_type for request_type in RequestType}
+_RPC_METHODS_BY_SERVICE: dict[str, tuple[RpcMethod, ...]] = {
+    service_name: tuple(
+        rpc_method
+        for rpc_method in RPC_METHODS
+        if rpc_method.service_name == service_name
+    )
+    for service_name in {rpc_method.service_name for rpc_method in RPC_METHODS}
+}
+
+
+def _service_handler_name(service: MPService, rpc_method: RpcMethod) -> str | None:
+    """Resolve the Python handler name for a service/rpc pair."""
+    service_type = type(service)
+    skipped: frozenset[str] = getattr(service_type, "GRPC_SKIP_METHODS", frozenset())
+    method_name = str(rpc_method)
+    if method_name in skipped or rpc_method.name in skipped:
+        return None
+    aliases: dict[str, str] = getattr(service_type, "GRPC_METHOD_ALIASES", {})
+    return aliases.get(method_name, rpc_method.name.lower())
+
+
+def _has_declared_handler(service: MPService, handler_name: str) -> bool:
+    """Return True only for methods declared by the concrete service class."""
+    try:
+        inspect.getattr_static(service, handler_name)
+    except AttributeError:
+        return False
+    return callable(getattr(service, handler_name))
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +216,8 @@ def _grpc_affinity_key(context: "grpc.ServicerContext") -> int:
 
 
 @dataclass
-class _PendingBatchRequest:
-    request_type: RequestType
+class _PendingUnaryRequest:
+    rpc_method: RpcMethod
     method_name: str
     stub_method: Any
     spec: TypedRpcSpec
@@ -217,8 +225,8 @@ class _PendingBatchRequest:
     future: MessagingFuture[Any]
 
 
-class MessageQueueClient:
-    """gRPC-backed client for the LMCache mp cache server.
+class MultiprocessGrpcClient:
+    """Typed gRPC client for the LMCache mp cache server.
 
     Instances are cheap; a shared ``grpc.Channel`` is created per client
     and callers can share one client across many threads (gRPC channels
@@ -248,25 +256,30 @@ class MessageQueueClient:
             options=_GRPC_UNLIMITED_MSG_OPTS,
             compression=compression,
         )
-        self._stub = lmcache_mq_pb2_grpc.MessageQueueStub(self._channel)
+        self._stubs = {
+            service_name: getattr(lmcache_mq_pb2_grpc, f"{service_name}Stub")(
+                self._channel
+            )
+            for service_name in {
+                typed_spec.service_name for typed_spec in _TYPED_RPCS.values()
+            }
+        }
         self._call_metadata = ((_GRPC_CLIENT_ID_METADATA_KEY, uuid.uuid4().bytes),)
         self._rpc_methods = {
-            request_type: (
-                _RPC_METHOD_NAMES[request_type],
-                getattr(self._stub, _RPC_METHOD_NAMES[request_type]),
+            rpc_method: (
+                _RPC_METHOD_NAMES[rpc_method],
+                getattr(
+                    self._stubs[typed_spec.service_name],
+                    _RPC_METHOD_NAMES[rpc_method],
+                ),
                 typed_spec,
             )
-            for request_type, typed_spec in _TYPED_RPCS.items()
+            for rpc_method, typed_spec in _TYPED_RPCS.items()
         }
-        self._batch_condition = threading.Condition()
-        self._batch_queue: deque[_PendingBatchRequest] = deque()
-        self._batch_thread: threading.Thread | None = None
-        self._inflight_requests = 0
-        self._closing = False
 
     def submit_request(
         self,
-        request_type: RequestType,
+        request_type: RpcMethod | str,
         request_payloads: list[Any],
         response_cls: Optional[T] = None,
     ) -> MessagingFuture[T]:
@@ -283,50 +296,26 @@ class MessageQueueClient:
             A ``MessagingFuture`` completed by the gRPC callback.
         """
         del response_cls
-        method_name, stub_method, typed_spec = self._rpc_methods[request_type]
+        rpc_method = coerce_rpc_method(request_type)
+        method_name, stub_method, typed_spec = self._rpc_methods[rpc_method]
         future: MessagingFuture[T] = MessagingFuture()
 
         proto_request = typed_spec.python_to_request(*request_payloads)
-        pending = _PendingBatchRequest(
-            request_type=request_type,
+        pending = _PendingUnaryRequest(
+            rpc_method=rpc_method,
             method_name=method_name,
             stub_method=stub_method,
             spec=typed_spec,
             proto_request=proto_request,
             future=future,
         )
-
-        use_batch = False
-        with self._batch_condition:
-            if self._closing:
-                raise RuntimeError("MessageQueueClient is closed")
-            use_batch = (
-                self._inflight_requests > 0
-                and request_type not in _GRPC_BATCH_UNSAFE_REQUEST_TYPES
-                and proto_request.ByteSize() <= _GRPC_BATCH_MAX_ITEM_BYTES
-            )
-            self._inflight_requests += 1
-            if use_batch:
-                self._batch_queue.append(pending)
-                self._ensure_batch_thread()
-                self._batch_condition.notify()
-
-        if not use_batch:
-            self._submit_unary(pending)
+        self._submit_unary(pending)
         return future
 
     def close(self) -> None:
-        with self._batch_condition:
-            if self._closing:
-                return
-            self._closing = True
-            self._batch_condition.notify()
-            batch_thread = self._batch_thread
-        if batch_thread is not None:
-            batch_thread.join()
         self._channel.close()
 
-    def _submit_unary(self, pending: _PendingBatchRequest) -> None:
+    def _submit_unary(self, pending: _PendingUnaryRequest) -> None:
         def _on_done_typed(call: "grpc.Future[Any]") -> None:
             self._on_unary_done(call, pending)
 
@@ -342,12 +331,11 @@ class MessageQueueClient:
     def _on_unary_done(
         self,
         call: "grpc.Future[Any]",
-        pending: _PendingBatchRequest,
+        pending: _PendingUnaryRequest,
     ) -> None:
         try:
             proto_response = call.result()
         except grpc.RpcError as exc:
-            self._finish_requests(1)
             if exc.code() is grpc.StatusCode.UNAVAILABLE:
                 logger.warning(
                     "gRPC call %s lost its server and remains pending: %s",
@@ -359,7 +347,6 @@ class MessageQueueClient:
             pending.future.set_exception(exc)
             return
         except Exception as exc:  # defensive
-            self._finish_requests(1)
             logger.exception("gRPC call %s failed", pending.method_name)
             pending.future.set_exception(exc)
             return
@@ -367,136 +354,12 @@ class MessageQueueClient:
         try:
             decoded = pending.spec.response_to_python(proto_response)
         except Exception as exc:
-            self._finish_requests(1)
             logger.exception(
                 "failed to decode typed response for %s", pending.method_name
             )
             pending.future.set_exception(exc)
             return
-        self._finish_requests(1)
         pending.future.set_result(decoded)
-
-    def _ensure_batch_thread(self) -> None:
-        if self._batch_thread is not None:
-            return
-        self._batch_thread = threading.Thread(
-            target=self._batch_loop,
-            daemon=True,
-            name="mq-grpc-batch",
-        )
-        self._batch_thread.start()
-
-    def _batch_loop(self) -> None:
-        while True:
-            with self._batch_condition:
-                self._batch_condition.wait_for(
-                    lambda: self._batch_queue or self._closing
-                )
-                if self._closing and not self._batch_queue:
-                    return
-
-            time.sleep(_GRPC_BATCH_COALESCE_SECONDS)
-            with self._batch_condition:
-                count = min(len(self._batch_queue), _GRPC_BATCH_MAX_ITEMS)
-                batch = [self._batch_queue.popleft() for _ in range(count)]
-
-            request = lmcache_mq_pb2.BatchRequest()
-            for pending in batch:
-                item = request.items.add()
-                item.method_id = pending.request_type.value
-                item.payload = pending.proto_request.SerializeToString()
-
-            def _on_done_batch(
-                call: "grpc.Future[Any]",
-                _batch: list[_PendingBatchRequest] = batch,
-            ) -> None:
-                self._on_batch_done(call, _batch)
-
-            call = self._stub.Batch.future(
-                request,
-                metadata=self._call_metadata,
-                wait_for_ready=True,
-            )
-            call.add_done_callback(_on_done_batch)
-
-    def _on_batch_done(
-        self,
-        call: "grpc.Future[Any]",
-        batch: list[_PendingBatchRequest],
-    ) -> None:
-        try:
-            response = call.result()
-        except grpc.RpcError as exc:
-            if exc.code() is grpc.StatusCode.UNIMPLEMENTED:
-                for pending in batch:
-                    self._submit_unary(pending)
-                return
-            self._finish_requests(len(batch))
-            if exc.code() is grpc.StatusCode.UNAVAILABLE:
-                logger.warning(
-                    "gRPC batch lost its server and %d requests remain pending: %s",
-                    len(batch),
-                    exc,
-                )
-                return
-            logger.error("gRPC batch failed: %s", exc)
-            for pending in batch:
-                pending.future.set_exception(exc)
-            return
-        except Exception as exc:  # defensive
-            self._finish_requests(len(batch))
-            logger.exception("gRPC batch failed")
-            for pending in batch:
-                pending.future.set_exception(exc)
-            return
-
-        if len(response.items) != len(batch):
-            response_count_error = RuntimeError(
-                f"gRPC batch returned {len(response.items)} responses "
-                f"for {len(batch)} requests"
-            )
-            self._finish_requests(len(batch))
-            for pending in batch:
-                pending.future.set_exception(response_count_error)
-            return
-
-        outcomes: list[tuple[_PendingBatchRequest, Any, BaseException | None]] = []
-        for pending, item in zip(batch, response.items, strict=True):
-            result_field = item.WhichOneof("result")
-            if result_field == "error":
-                item_error = RuntimeError(
-                    f"batched gRPC call {pending.method_name} failed "
-                    f"with {item.error.status}: {item.error.details}"
-                )
-                outcomes.append((pending, None, item_error))
-                continue
-            if result_field != "payload":
-                response_type_error = RuntimeError(
-                    f"batched gRPC call {pending.method_name} returned "
-                    f"an invalid result {result_field!r}"
-                )
-                outcomes.append((pending, None, response_type_error))
-                continue
-            try:
-                proto_response = pending.spec.response_message()
-                proto_response.ParseFromString(item.payload)
-                decoded = pending.spec.response_to_python(proto_response)
-            except Exception as exc:
-                outcomes.append((pending, None, exc))
-            else:
-                outcomes.append((pending, decoded, None))
-
-        self._finish_requests(len(batch))
-        for pending, decoded, outcome_error in outcomes:
-            if outcome_error is not None:
-                pending.future.set_exception(outcome_error)
-            else:
-                pending.future.set_result(decoded)
-
-    def _finish_requests(self, count: int) -> None:
-        with self._batch_condition:
-            self._inflight_requests -= count
-            assert self._inflight_requests >= 0
 
 
 # ---------------------------------------------------------------------------
@@ -583,99 +446,18 @@ class NonBlockingRequestHandler(Generic[ResponseType, StateType]):
 
 
 # ---------------------------------------------------------------------------
-# Server: gRPC servicer bridging RequestType -> RequestHandlerBase
+# Server: gRPC servicer bridging RpcMethod -> RequestHandlerBase
 # ---------------------------------------------------------------------------
 
 
 class _RequestHandlerServicer:
-    """Bridge every rpc method to the ``RequestHandlerBase`` registered
-    under the matching ``RequestType``.
-
-    Each generated method just calls :meth:`_dispatch` with the right
-    ``RequestType``; keeping one implementation avoids 36 near-identical
-    thunks in this file.  gRPC's method routing already runs before we
-    get here, so ``_dispatch`` is the whole request path.
-    """
+    """Bridge every rpc method to its registered ``RequestHandlerBase``."""
 
     def __init__(
         self,
-        handlers: dict[RequestType, RequestHandlerBase[Any]],
+        handlers: dict[RpcMethod, RequestHandlerBase[Any]],
     ):
         self._handlers = handlers
-
-    def Batch(self, request: Any, context: "grpc.ServicerContext") -> Any:
-        """Execute a typed micro-batch while preserving response order."""
-        if len(request.items) > _GRPC_BATCH_MAX_ITEMS:
-            context.abort(
-                grpc.StatusCode.INVALID_ARGUMENT,
-                f"batch has {len(request.items)} items; "
-                f"maximum is {_GRPC_BATCH_MAX_ITEMS}",
-            )
-        response = lmcache_mq_pb2.BatchResponse()
-        executions: list[tuple[Any, str, TypedRpcSpec, Any]] = []
-        affinity_key = _grpc_affinity_key(context)
-
-        for request_item in request.items:
-            response_item = response.items.add()
-            method_id = request_item.method_id
-            if not method_id:
-                self._set_batch_error(
-                    response_item,
-                    "INVALID_ARGUMENT",
-                    "batch request item has no method id",
-                )
-                continue
-            request_type = _RPC_REQUEST_TYPES.get(method_id)
-            if request_type is None:
-                self._set_batch_error(
-                    response_item,
-                    "INVALID_ARGUMENT",
-                    f"unknown batch method id {method_id}",
-                )
-                continue
-            method_name = _RPC_METHOD_NAMES[request_type]
-
-            handler = self._handlers.get(request_type)
-            if handler is None:
-                self._set_batch_error(
-                    response_item,
-                    "UNIMPLEMENTED",
-                    f"No handler registered for {request_type}",
-                )
-                continue
-
-            spec = _TYPED_RPCS[request_type]
-            try:
-                proto_request = spec.request_message()
-                proto_request.ParseFromString(request_item.payload)
-                py_args = spec.request_to_python(proto_request)
-                execution = self._submit_handler(handler, py_args, affinity_key)
-            except Exception as exc:
-                logger.exception("failed to start batched %s", request_type)
-                self._set_batch_error(
-                    response_item,
-                    "UNKNOWN",
-                    str(exc),
-                )
-                continue
-            executions.append((response_item, method_name, spec, execution))
-
-        for response_item, method_name, spec, execution in executions:
-            try:
-                result = (
-                    execution.result() if isinstance(execution, Future) else execution
-                )
-                proto_response = spec.python_to_response(result)
-                response_item.payload = proto_response.SerializeToString()
-            except Exception as exc:
-                logger.exception("failed to complete batched %s", method_name)
-                self._set_batch_error(
-                    response_item,
-                    "UNKNOWN",
-                    str(exc),
-                )
-
-        return response
 
     @staticmethod
     def _submit_handler(
@@ -712,7 +494,7 @@ class _RequestHandlerServicer:
         self,
         request: Any,
         context: "grpc.ServicerContext",
-        request_type: RequestType,
+        request_type: RpcMethod,
         spec: TypedRpcSpec,
     ) -> Any:
         """Decode a typed request, run its handler, and encode the response."""
@@ -728,15 +510,10 @@ class _RequestHandlerServicer:
         result = self._run_handler(handler, py_args, context)
         return spec.python_to_response(result)
 
-    @staticmethod
-    def _set_batch_error(item: Any, status: str, details: str) -> None:
-        item.error.status = status
-        item.error.details = details
-
 
 def _install_servicer_methods() -> None:
-    """Attach one typed dispatch method per ``RequestType`` to the servicer."""
-    for rt in RequestType:
+    """Attach one typed dispatch method per RpcMethod to the servicer."""
+    for rt in RPC_METHODS:
         method_name = _RPC_METHOD_NAMES[rt]
         typed_spec = _TYPED_RPCS[rt]
         method: Callable[..., Any]
@@ -746,7 +523,7 @@ def _install_servicer_methods() -> None:
             self: _RequestHandlerServicer,
             request: Any,
             context: "grpc.ServicerContext",
-            _rt: RequestType = rt,
+            _rt: RpcMethod = rt,
             _spec: TypedRpcSpec = _resolved_spec,
         ) -> Any:
             return self._dispatch_typed(request, context, _rt, _spec)
@@ -761,7 +538,7 @@ _install_servicer_methods()
 
 
 # ---------------------------------------------------------------------------
-# Server: public MessageQueueServer API preserved
+# Server: typed gRPC server
 # ---------------------------------------------------------------------------
 
 
@@ -771,13 +548,13 @@ class _ServerConfig:
     max_concurrency: int = 32
 
 
-class MessageQueueServer:
-    """gRPC server that wraps ``RequestHandlerBase`` instances.
+class MultiprocessGrpcServer:
+    """gRPC server that mounts descriptor-derived service methods.
 
-    Public API mirrors the historical zmq-backed one so no module needs
-    to change: ``add_handler`` / ``add_normal_thread_pool`` /
-    ``add_affinity_thread_pool`` / ``start`` / ``close`` all keep their
-    old semantics.
+    The normal path is ``mount_services()``: services declare generated gRPC
+    service names, and the transport discovers the Python handler method for
+    each protobuf method from that descriptor. Direct ``add_handler`` remains
+    available for focused transport tests and external compatibility.
 
     Args:
         bind_url: Either ``grpc://host:port`` or a bare ``host:port``.
@@ -799,17 +576,17 @@ class MessageQueueServer:
         del context, transport  # legacy positional slots, no longer used
         self._bind_url = bind_url
         self._grpc_max_workers = grpc_max_workers
-        self.handlers: dict[RequestType, RequestHandlerBase[Any]] = {}
+        self.handlers: dict[RpcMethod, RequestHandlerBase[Any]] = {}
         self.extra_pools: list[ThreadPoolExecutor | AffinityThreadPool] = []
         self._server: grpc.Server | None = None
         self._closed = threading.Event()
 
     # ------------------------------------------------------------------
-    # Handler registration (identical semantics to the old zmq server)
+    # Direct handler registration for transport tests and compatibility.
     # ------------------------------------------------------------------
 
     def _inspect_handler_signature(
-        self, request_type: RequestType, handler: Callable[..., Any]
+        self, request_type: RpcMethod | str, handler: Callable[..., Any]
     ) -> bool:
         """Verify a handler's parameter / return annotations match the
         registered ``ProtocolDefinition``.
@@ -826,6 +603,7 @@ class MessageQueueServer:
                 b = type(None)
             return a == b
 
+        rpc_method = coerce_rpc_method(request_type)
         sig = inspect.signature(handler)
         hints = get_type_hints(handler)
         params = [
@@ -838,11 +616,11 @@ class MessageQueueServer:
             )
         ]
 
-        payload_clss = get_payload_classes(request_type)
+        payload_clss = get_payload_classes(rpc_method)
         if len(params) != len(payload_clss):
             logger.error(
                 "Handler for %s expects %d args, but got %d",
-                request_type,
+                rpc_method,
                 len(payload_clss),
                 len(params),
             )
@@ -855,7 +633,7 @@ class MessageQueueServer:
             if not same_type(ann, expected_cls):
                 logger.error(
                     "Handler for %s arg %d expects %s, got %s",
-                    request_type,
+                    rpc_method,
                     i,
                     expected_cls,
                     ann,
@@ -863,11 +641,11 @@ class MessageQueueServer:
                 return False
 
         return_ann = hints.get("return", sig.return_annotation)
-        expected_return_cls = get_response_class(request_type)
+        expected_return_cls = get_response_class(rpc_method)
         if not same_type(return_ann, expected_return_cls):
             logger.error(
                 "Handler for %s expects return %s, got %s",
-                request_type,
+                rpc_method,
                 expected_return_cls,
                 return_ann,
             )
@@ -876,20 +654,33 @@ class MessageQueueServer:
 
     def add_handler(
         self,
-        request_type: RequestType,
-        payload_clss: list[Any],
-        handler_type: HandlerType,
-        handler: Callable[..., Any],
+        request_type: RpcMethod | str,
+        *args: Any,
     ) -> None:
-        if not self._inspect_handler_signature(request_type, handler):
+        rpc_method = coerce_rpc_method(request_type)
+        if len(args) == 1 and callable(args[0]):
+            handler = args[0]
+            payload_clss = get_payload_classes(rpc_method)
+            handler_type = get_handler_type(rpc_method)
+        elif len(args) == 3:
+            payload_clss, handler_type, handler = args
+        else:
+            raise TypeError(
+                "add_handler expects either (rpc_method, handler) or "
+                "(rpc_method, payload_clss, handler_type, handler)"
+            )
+
+        if not callable(handler):
+            raise TypeError("handler must be callable")
+        if not self._inspect_handler_signature(rpc_method, handler):
             raise ValueError(
-                f"Handler signature does not match for request type: {request_type}"
+                f"Handler signature does not match for request type: {rpc_method}"
             )
 
         if handler_type is HandlerType.SYNC:
-            self.add_sync_handler(request_type, payload_clss, handler)
+            self.add_sync_handler(rpc_method, handler)
         elif handler_type is HandlerType.BLOCKING:
-            self.add_blocking_handler(request_type, payload_clss, handler)
+            self.add_blocking_handler(rpc_method, handler)
         elif handler_type is HandlerType.NON_BLOCKING:
             raise NotImplementedError("Non-blocking handler is not supported yet")
         else:
@@ -897,55 +688,117 @@ class MessageQueueServer:
 
     def add_sync_handler(
         self,
-        request_type: RequestType,
-        payload_clss: list[Any],
+        request_type: RpcMethod | str,
         handler: Callable[..., Any],
     ) -> None:
-        response_cls = get_response_class(request_type)
-        self.handlers[request_type] = SyncRequestHandler(
-            payload_clss, response_cls, handler
+        rpc_method = coerce_rpc_method(request_type)
+        response_cls = get_response_class(rpc_method)
+        self.handlers[rpc_method] = SyncRequestHandler(
+            get_payload_classes(rpc_method), response_cls, handler
         )
 
     def add_blocking_handler(
         self,
-        request_type: RequestType,
-        payload_clss: list[Any],
+        request_type: RpcMethod | str,
         handler: Callable[..., Any],
     ) -> None:
-        response_cls = get_response_class(request_type)
-        self.handlers[request_type] = BlockingRequestHandler(
-            payload_clss, response_cls, handler
+        rpc_method = coerce_rpc_method(request_type)
+        response_cls = get_response_class(rpc_method)
+        self.handlers[rpc_method] = BlockingRequestHandler(
+            get_payload_classes(rpc_method), response_cls, handler
         )
 
     def add_nonblocking_handler(
         self,
-        request_type: RequestType,
-        payload_clss: list[Any],
+        request_type: RpcMethod | str,
         handler: Callable[..., Any],
     ) -> None:
+        del request_type, handler
         raise NotImplementedError
+
+    def mount_services(
+        self,
+        services: Sequence[MPService],
+        *,
+        max_cpu_workers: int,
+        max_gpu_workers: int,
+    ) -> None:
+        """Mount RPC handlers implemented by service objects.
+
+        Services declare generated gRPC service names through
+        ``GRPC_SERVICE_NAMES``. For each method in those descriptors, the
+        transport binds a same-named Python method using the lower-case
+        request name (``P2P_LOOKUP_AND_LOCK`` -> ``p2p_lookup_and_lock``),
+        with optional class-level aliases for Python method names that
+        intentionally differ.
+
+        Args:
+            services: Service objects implementing generated gRPC operations.
+            max_cpu_workers: Worker count for normal blocking handlers.
+            max_gpu_workers: Worker count for affinity-routed blocking handlers.
+        """
+        mounted_types: list[RpcMethod] = []
+        mounted_seen: set[RpcMethod] = set()
+        for service in services:
+            for service_name in getattr(type(service), "GRPC_SERVICE_NAMES", ()):
+                if service_name not in _RPC_METHODS_BY_SERVICE:
+                    raise ValueError(f"Unknown gRPC service {service_name!r}")
+                for rpc_method in _RPC_METHODS_BY_SERVICE[service_name]:
+                    handler_name = _service_handler_name(service, rpc_method)
+                    if handler_name is None or not _has_declared_handler(
+                        service, handler_name
+                    ):
+                        continue
+                    self.add_handler(rpc_method, getattr(service, handler_name))
+                    if rpc_method not in mounted_seen:
+                        mounted_types.append(rpc_method)
+                        mounted_seen.add(rpc_method)
+
+        affinity_types = [
+            rpc_method
+            for rpc_method in mounted_types
+            if get_handler_type(rpc_method) is HandlerType.BLOCKING
+            and requires_client_affinity(rpc_method)
+        ]
+        normal_types = [
+            rpc_method
+            for rpc_method in mounted_types
+            if get_handler_type(rpc_method) is HandlerType.BLOCKING
+            and not requires_client_affinity(rpc_method)
+        ]
+        if affinity_types:
+            self.add_affinity_thread_pool(
+                affinity_types,
+                max_workers=max_gpu_workers,
+            )
+        if normal_types:
+            self.add_normal_thread_pool(
+                normal_types,
+                max_workers=max_cpu_workers,
+            )
 
     def _validate_blocking_handlers(
         self,
-        request_types: list[RequestType],
+        request_types: Sequence[RpcMethod | str],
         method_name: str,
     ) -> None:
         for request_type in request_types:
-            handler = self.handlers.get(request_type)
+            rpc_method = coerce_rpc_method(request_type)
+            handler = self.handlers.get(rpc_method)
             if handler is None:
                 raise ValueError(
-                    f"No handler registered for request type: {request_type}. "
+                    f"No handler registered for request type: {rpc_method}. "
                     f"Register handlers before calling {method_name}."
                 )
             if not isinstance(handler, BlockingRequestHandler):
                 raise TypeError(
-                    f"Handler for {request_type} is "
+                    f"Handler for {rpc_method} is "
                     f"{type(handler).__name__}, not BlockingRequestHandler."
                 )
 
     def add_normal_thread_pool(
         self,
-        request_types: list[RequestType],
+        request_types: Sequence[RpcMethod | str],
         max_workers: int,
     ) -> None:
         self._validate_blocking_handlers(request_types, "add_normal_thread_pool")
@@ -958,19 +811,20 @@ class MessageQueueServer:
         )
         self.extra_pools.append(pool)
         for request_type in request_types:
-            handler = self.handlers[request_type]
+            rpc_method = coerce_rpc_method(request_type)
+            handler = self.handlers[rpc_method]
             assert isinstance(handler, BlockingRequestHandler)
             handler.executor = pool
 
         logger.debug(
             "Created normal thread pool (max_workers=%d) for %s",
             max_workers,
-            [rt.name for rt in request_types],
+            [coerce_rpc_method(rt).name for rt in request_types],
         )
 
     def add_affinity_thread_pool(
         self,
-        request_types: list[RequestType],
+        request_types: Sequence[RpcMethod | str],
         max_workers: int,
     ) -> None:
         self._validate_blocking_handlers(request_types, "add_affinity_thread_pool")
@@ -983,14 +837,15 @@ class MessageQueueServer:
         )
         self.extra_pools.append(pool)
         for request_type in request_types:
-            handler = self.handlers[request_type]
+            rpc_method = coerce_rpc_method(request_type)
+            handler = self.handlers[rpc_method]
             assert isinstance(handler, BlockingRequestHandler)
             handler.executor = pool
 
         logger.debug(
             "Created affinity thread pool (max_workers=%d) for %s",
             max_workers,
-            [rt.name for rt in request_types],
+            [coerce_rpc_method(rt).name for rt in request_types],
         )
 
     # ------------------------------------------------------------------
@@ -1018,11 +873,18 @@ class MessageQueueServer:
             compression=compression,
         )
         servicer = _RequestHandlerServicer(self.handlers)
-        lmcache_mq_pb2_grpc.add_MessageQueueServicer_to_server(servicer, server)
+        for service_name in sorted(
+            {typed_spec.service_name for typed_spec in _TYPED_RPCS.values()}
+        ):
+            add_servicer = getattr(
+                lmcache_mq_pb2_grpc,
+                f"add_{service_name}Servicer_to_server",
+            )
+            add_servicer(servicer, server)
         server.add_insecure_port(target)
         server.start()
         self._server = server
-        logger.info("MessageQueueServer listening on %s (gRPC)", self._bind_url)
+        logger.info("MultiprocessGrpcServer listening on %s", self._bind_url)
 
     def close(self) -> None:
         if self._closed.is_set():
@@ -1033,3 +895,9 @@ class MessageQueueServer:
             self._server = None
         for pool in self.extra_pools:
             pool.shutdown(wait=False)
+
+
+# Compatibility aliases for existing public imports. New code should use the
+# gRPC names above; these aliases intentionally carry no separate behavior.
+MessageQueueClient = MultiprocessGrpcClient
+MessageQueueServer = MultiprocessGrpcServer
