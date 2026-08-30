@@ -294,8 +294,10 @@ def send_ping(
         True if server is healthy, False on timeout or error.
     """
     try:
-        future = mq_client.ping(instance_id)
-        return future.result(timeout=timeout)
+        probe_token = f"vllm-ping:{instance_id}"
+        future = mq_client.ping(instance_id, probe_token)
+        ok, echoed_probe_token = future.result(timeout=timeout)
+        return ok and echoed_probe_token == probe_token
     except TimeoutError:
         return False
     except Exception:

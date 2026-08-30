@@ -101,21 +101,23 @@ class ManagementService:
         if self._reaper is not None:
             self._reaper.stop()
 
-    def ping(self, instance_id: int | None) -> bool:
+    def ping(self, instance_id: int | None, probe_token: str) -> tuple[bool, str]:
         """Respond to a ping and refresh the sender's liveness.
 
         Args:
             instance_id: The sender's worker instance ID, or None for an
                 untracked prober (the scheduler adapter). When not None, the
                 worker's last-seen time is refreshed on every liveness target.
+            probe_token: Caller-supplied token echoed back to validate response
+                field decoding.
 
         Returns:
-            Always True.
+            ``(True, probe_token)``.
         """
         if instance_id is not None:
             for target in self._liveness_targets:
                 target.touch_instance(instance_id)
-        return True
+        return True, probe_token
 
     def _reap_cycle(self) -> ThreadRunSummary:
         """Run one reaper scan: reap stale workers, drop mirrored state.

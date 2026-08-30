@@ -144,11 +144,11 @@ def test_concurrent_mixed_requests_roundtrip_over_unary_rpcs() -> None:
     first_ping_entered = threading.Event()
     release_first_ping = threading.Event()
 
-    def ping_handler(instance_id: Optional[int]) -> bool:
+    def ping_handler(instance_id: Optional[int], probe_token: str) -> tuple[bool, str]:
         if instance_id == 0:
             first_ping_entered.set()
             release_first_ping.wait(timeout=5.0)
-        return True
+        return True, probe_token
 
     def noop_handler() -> str:
         return "ok"
@@ -171,21 +171,21 @@ def test_concurrent_mixed_requests_roundtrip_over_unary_rpcs() -> None:
     client = MultiprocessGrpcClient(server_url)
 
     try:
-        first: MessagingFuture[bool] = client.ping(0)
+        first: MessagingFuture[tuple[bool, str]] = client.ping(0, "first")
         assert first_ping_entered.wait(timeout=5.0)
         futures: list[MessagingFuture[Any]] = [
-            client.ping(1),
+            client.ping(1, "second"),
             client.noop(),
-            client.ping(2),
+            client.ping(2, "third"),
             client.noop(),
         ]
         release_first_ping.set()
 
-        assert first.result(timeout=5.0) is True
+        assert first.result(timeout=5.0) == (True, "first")
         assert [future.result(timeout=5.0) for future in futures] == [
-            True,
+            (True, "second"),
             "ok",
-            True,
+            (True, "third"),
             "ok",
         ]
     finally:
@@ -201,13 +201,15 @@ def test_unix_clients_keep_distinct_grpc_affinity() -> None:
         threads_by_client: dict[int, set[str]] = {1: set(), 2: set()}
         seen_lock = threading.Lock()
 
-        def ping_handler(instance_id: Optional[int]) -> bool:
+        def ping_handler(
+            instance_id: Optional[int], probe_token: str
+        ) -> tuple[bool, str]:
             assert instance_id is not None
             client_id = instance_id // 100
             with seen_lock:
                 threads_by_client[client_id].add(threading.current_thread().name)
             time.sleep(0.005)
-            return True
+            return True, probe_token
 
         server = MultiprocessGrpcServer(server_url)
         server.add_handler(
@@ -224,11 +226,14 @@ def test_unix_clients_keep_distinct_grpc_affinity() -> None:
         ]
 
         try:
-            futures: list[MessagingFuture[bool]] = []
+            futures: list[tuple[MessagingFuture[tuple[bool, str]], str]] = []
             for index in range(8):
-                futures.append(clients[0].ping(100 + index))
-                futures.append(clients[1].ping(200 + index))
-            assert all(future.result(timeout=5.0) is True for future in futures)
+                token_1 = f"client-1-{index}"
+                token_2 = f"client-2-{index}"
+                futures.append((clients[0].ping(100 + index, token_1), token_1))
+                futures.append((clients[1].ping(200 + index, token_2), token_2))
+            for future, token in futures:
+                assert future.result(timeout=5.0) == (True, token)
             assert all(len(names) == 1 for names in threads_by_client.values())
             assert threads_by_client[1] != threads_by_client[2]
         finally:
@@ -244,11 +249,11 @@ def test_unary_item_error_surfaces_as_grpc_failure() -> None:
     first_ping_entered = threading.Event()
     release_first_ping = threading.Event()
 
-    def ping_handler(instance_id: Optional[int]) -> bool:
+    def ping_handler(instance_id: Optional[int], probe_token: str) -> tuple[bool, str]:
         if instance_id == 0:
             first_ping_entered.set()
             release_first_ping.wait(timeout=5.0)
-        return True
+        return True, probe_token
 
     def failing_noop_handler() -> str:
         raise ValueError("expected unary failure")
@@ -271,17 +276,17 @@ def test_unary_item_error_surfaces_as_grpc_failure() -> None:
     client = MultiprocessGrpcClient(server_url)
 
     try:
-        first: MessagingFuture[bool] = client.ping(0)
+        first: MessagingFuture[tuple[bool, str]] = client.ping(0, "blocked")
         assert first_ping_entered.wait(timeout=5.0)
         failed: MessagingFuture[str] = client.noop()
-        succeeded: MessagingFuture[bool] = client.ping(1)
+        succeeded: MessagingFuture[tuple[bool, str]] = client.ping(1, "succeeded")
         release_first_ping.set()
 
-        assert first.result(timeout=5.0) is True
+        assert first.result(timeout=5.0) == (True, "blocked")
         with pytest.raises(grpc.RpcError, match="expected unary failure") as exc_info:
             failed.result(timeout=5.0)
         assert exc_info.value.code() is grpc.StatusCode.UNKNOWN
-        assert succeeded.result(timeout=5.0) is True
+        assert succeeded.result(timeout=5.0) == (True, "succeeded")
     finally:
         release_first_ping.set()
         client.close()
@@ -302,7 +307,10 @@ def test_client_works_with_minimal_unary_servicer() -> None:
             if request.instance_id == 0:
                 first_ping_entered.set()
                 release_first_ping.wait(timeout=5.0)
-            return lmcache_mp_pb2.PingResponse(ok=True)
+            return lmcache_mp_pb2.PingResponse(
+                ok=True,
+                echoed_probe_token=request.probe_token,
+            )
 
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
     lmcache_mp_pb2_grpc.add_ControllerServiceServicer_to_server(
@@ -313,13 +321,13 @@ def test_client_works_with_minimal_unary_servicer() -> None:
     client = MultiprocessGrpcClient(server_url)
 
     try:
-        first: MessagingFuture[bool] = client.ping(0)
+        first: MessagingFuture[tuple[bool, str]] = client.ping(0, "first")
         assert first_ping_entered.wait(timeout=5.0)
-        second: MessagingFuture[bool] = client.ping(1)
+        second: MessagingFuture[tuple[bool, str]] = client.ping(1, "second")
         release_first_ping.set()
 
-        assert first.result(timeout=5.0) is True
-        assert second.result(timeout=5.0) is True
+        assert first.result(timeout=5.0) == (True, "first")
+        assert second.result(timeout=5.0) == (True, "second")
     finally:
         release_first_ping.set()
         client.close()
@@ -330,11 +338,11 @@ def test_ping_roundtrip_with_positional_and_keyword_fields() -> None:
     """The client can construct protobuf requests from function-style calls."""
     port = _find_free_port()
     server_url = f"grpc://127.0.0.1:{port}"
-    seen_calls: list[Optional[int]] = []
+    seen_calls: list[tuple[Optional[int], str]] = []
 
-    def ping_handler(instance_id: Optional[int]) -> bool:
-        seen_calls.append(instance_id)
-        return True
+    def ping_handler(instance_id: Optional[int], probe_token: str) -> tuple[bool, str]:
+        seen_calls.append((instance_id, probe_token))
+        return True, probe_token
 
     server = MultiprocessGrpcServer(server_url)
     server.add_handler(
@@ -348,11 +356,17 @@ def test_ping_roundtrip_with_positional_and_keyword_fields() -> None:
     client = MultiprocessGrpcClient(server_url)
 
     try:
-        assert client.ping(42).result(timeout=5.0) is True
-        assert seen_calls[-1] == 42
+        assert client.ping(42, "positional").result(timeout=5.0) == (
+            True,
+            "positional",
+        )
+        assert seen_calls[-1] == (42, "positional")
 
-        assert client.ping(instance_id=None).result(timeout=5.0) is True
-        assert seen_calls[-1] is None
+        assert client.ping(
+            instance_id=None,
+            probe_token="keyword",
+        ).result(timeout=5.0) == (True, "keyword")
+        assert seen_calls[-1] == (None, "keyword")
 
         assert len(seen_calls) == 2
     finally:
@@ -734,7 +748,10 @@ def test_grpc_request_stays_pending_when_server_is_not_ready() -> None:
     client = MultiprocessGrpcClient(server_url)
 
     try:
-        future: MessagingFuture[bool] = client.ping(1)
+        future: MessagingFuture[tuple[bool, str]] = client.ping(
+            1,
+            "pending-start",
+        )
         assert not future.wait(timeout=0.1)
     finally:
         client.close()
@@ -747,11 +764,11 @@ def test_grpc_request_stays_pending_when_server_stops_mid_call() -> None:
     entered = threading.Event()
     release = threading.Event()
 
-    def ping_handler(instance_id: Optional[int]) -> bool:
+    def ping_handler(instance_id: Optional[int], probe_token: str) -> tuple[bool, str]:
         del instance_id
         entered.set()
         release.wait(timeout=5.0)
-        return True
+        return True, probe_token
 
     server = MultiprocessGrpcServer(server_url)
     server.add_handler(
@@ -765,7 +782,10 @@ def test_grpc_request_stays_pending_when_server_stops_mid_call() -> None:
     client = MultiprocessGrpcClient(server_url)
 
     try:
-        future: MessagingFuture[bool] = client.ping(1)
+        future: MessagingFuture[tuple[bool, str]] = client.ping(
+            1,
+            "pending-stop",
+        )
         assert entered.wait(timeout=5.0)
         server.close()
         assert not future.wait(timeout=0.1)

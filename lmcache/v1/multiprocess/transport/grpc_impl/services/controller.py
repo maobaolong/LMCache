@@ -32,6 +32,6 @@ class ControllerServiceImpl:
         return self._management.get_experimental()
 
     @grpc_method(HandlerType.BLOCKING)
-    def Ping(self, instance_id: int | None) -> bool:
+    def Ping(self, instance_id: int | None, probe_token: str) -> tuple[bool, str]:
         """Refresh worker liveness and report server reachability."""
-        return self._management.ping(instance_id)
+        return self._management.ping(instance_id, probe_token)

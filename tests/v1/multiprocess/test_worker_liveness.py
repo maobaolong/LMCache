@@ -235,8 +235,8 @@ def test_management_ping_touches_targets() -> None:
     target = _FakeTarget()
     mgmt = ManagementService(MagicMock(), liveness_targets=[target])
 
-    assert mgmt.ping(42) is True
-    assert mgmt.ping(None) is True
+    assert mgmt.ping(42, "worker") == (True, "worker")
+    assert mgmt.ping(None, "probe") == (True, "probe")
     assert target.touched == [42]
 
 
@@ -267,7 +267,7 @@ def test_management_reaper_disabled_when_timeout_zero() -> None:
         worker_reap_timeout_seconds=0.0,
     )
     assert mgmt._reaper is None
-    assert mgmt.ping(1) is True
+    assert mgmt.ping(1, "reaped") == (True, "reaped")
 
 
 def test_management_report_status_summarizes_liveness() -> None:
