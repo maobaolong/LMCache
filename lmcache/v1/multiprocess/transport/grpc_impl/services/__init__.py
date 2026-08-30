@@ -11,6 +11,9 @@ from lmcache.v1.multiprocess.transport.grpc_impl.services.controller import (
 from lmcache.v1.multiprocess.transport.grpc_impl.services.debug import (
     DebugServiceImpl,
 )
+from lmcache.v1.multiprocess.transport.grpc_impl.services.demo import (
+    DemoServiceImpl,
+)
 from lmcache.v1.multiprocess.transport.grpc_impl.services.engine import (
     EngineServiceImpl,
 )
@@ -25,6 +28,7 @@ __all__ = [
     "BlendServiceImpl",
     "ControllerServiceImpl",
     "DebugServiceImpl",
+    "DemoServiceImpl",
     "EngineServiceImpl",
     "ObservabilityServiceImpl",
     "P2PServiceImpl",

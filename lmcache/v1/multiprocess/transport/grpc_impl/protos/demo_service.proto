@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// DemoService wire contract for validating new gRPC service expansion.
+
+syntax = "proto3";
+
+package lmcache.mp;
+
+message DemoRequest {
+  string demo_value = 1;
+}
+
+message DemoResponse {
+  string demo_result = 1;
+}
+
+service DemoService {
+  rpc Demo(DemoRequest) returns (DemoResponse);
+}
