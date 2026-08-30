@@ -163,8 +163,17 @@ message RegisterKvCacheRequest {
 
 message RegisterKvCacheResponse {}
 
+message EchoEngineProbeRequest {
+  string probe_token = 1;
+}
+
+message EchoEngineProbeResponse {
+  string echoed_probe_token = 1;
+}
+
 service EngineService {
   rpc RegisterKvCache(RegisterKvCacheRequest) returns (RegisterKvCacheResponse);
+  rpc EchoEngineProbe(EchoEngineProbeRequest) returns (EchoEngineProbeResponse);
   rpc RegisterQCache(RegisterKvCacheRequest) returns (RegisterKvCacheResponse);
   rpc UnregisterKvCache(UnregisterKvCacheRequest)
       returns (UnregisterKvCacheResponse);

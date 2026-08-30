@@ -107,6 +107,10 @@ class EngineServiceImpl:
             engine_group_infos,
         )
 
+    def EchoEngineProbe(self, probe_token: str) -> str:
+        """Echo an EngineService probe token."""
+        return probe_token
+
     def RegisterQCache(
         self,
         instance_id: int,
