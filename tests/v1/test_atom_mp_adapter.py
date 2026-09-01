@@ -3,7 +3,7 @@
 
 # Standard
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 import threading
 
 # Third Party
@@ -273,7 +273,10 @@ def test_atom_heartbeat_runs_recovery_before_publishing_health(
 ) -> None:
     """A successful ping only restores health after re-registration succeeds."""
     client = MagicMock()
-    client.ping.side_effect = [_resolved_future(False), _resolved_future(True)]
+    client.ping.side_effect = [
+        _resolved_future((False, "atom-ping:7")),
+        _resolved_future((True, "atom-ping:7")),
+    ]
     health_event = threading.Event()
     health_event.set()
     recover = MagicMock(return_value=True)
@@ -294,7 +297,12 @@ def test_atom_heartbeat_runs_recovery_before_publishing_health(
     heartbeat._execute()
     assert health_event.is_set() is True
     recover.assert_called_once_with()
-    assert client.ping.call_count == 2
+    client.ping.assert_has_calls(
+        [
+            call(7, "atom-ping:7"),
+            call(7, "atom-ping:7"),
+        ]
+    )
 
 
 @pytest.mark.parametrize("adapter_kind", ["scheduler", "worker"])

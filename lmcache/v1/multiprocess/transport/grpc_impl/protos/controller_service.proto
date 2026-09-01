@@ -24,10 +24,12 @@ message GetExperimentalResponse {
 
 message PingRequest {
   optional int64 instance_id = 1;
+  string probe_token = 2;
 }
 
 message PingResponse {
   bool ok = 1;
+  string echoed_probe_token = 2;
 }
 
 service ControllerService {

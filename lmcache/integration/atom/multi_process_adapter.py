@@ -109,9 +109,11 @@ class _HeartbeatThread(PeriodicThread):
     def _execute(self) -> ThreadRunSummary:
         was_healthy = self._health_event.is_set()
         try:
-            healthy = bool(
-                self._client.ping(self._instance_id).result(timeout=self._timeout)
-            )
+            probe_token = f"atom-ping:{self._instance_id}"
+            ok, echoed_probe_token = self._client.ping(
+                self._instance_id, probe_token
+            ).result(timeout=self._timeout)
+            healthy = ok and echoed_probe_token == probe_token
         except Exception:
             healthy = False
         if self.stop_requested:

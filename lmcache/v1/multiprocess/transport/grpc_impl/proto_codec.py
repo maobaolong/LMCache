@@ -756,6 +756,9 @@ def decode_response_to_python(response: Any) -> Any:
     if not proto_fields:
         return None
 
+    if descriptor.name == "PingResponse":
+        return (response.ok, response.echoed_probe_token)
+
     if descriptor.name.endswith("Response") and len(proto_fields) > 1:
         return response
 
