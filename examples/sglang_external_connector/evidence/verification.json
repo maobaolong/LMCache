@@ -1,0 +1,109 @@
+{
+  "passed": true,
+  "case_count": 36,
+  "responses_compared_to_no_cache_baselines": 26,
+  "matching_output_token_ids": 832,
+  "max_output_logprob_abs_diff": 0.0,
+  "verified_rank_retrieves": [
+    {
+      "case": "tp1-external-warm",
+      "rank": 0
+    },
+    {
+      "case": "tp1-partial-hit",
+      "rank": 0
+    },
+    {
+      "case": "tp1-concurrent-1",
+      "rank": 0
+    },
+    {
+      "case": "tp1-concurrent-3",
+      "rank": 0
+    },
+    {
+      "case": "tp1-concurrent-2",
+      "rank": 0
+    },
+    {
+      "case": "tp1-concurrent-0",
+      "rank": 0
+    },
+    {
+      "case": "tp1-after-cancel",
+      "rank": 0
+    },
+    {
+      "case": "tp1-after-restart",
+      "rank": 0
+    },
+    {
+      "case": "tp2-external-warm",
+      "rank": 0
+    },
+    {
+      "case": "tp2-external-warm",
+      "rank": 1
+    },
+    {
+      "case": "tp2-partial-hit",
+      "rank": 0
+    },
+    {
+      "case": "tp2-partial-hit",
+      "rank": 1
+    },
+    {
+      "case": "tp2-concurrent-3",
+      "rank": 0
+    },
+    {
+      "case": "tp2-concurrent-3",
+      "rank": 1
+    },
+    {
+      "case": "tp2-concurrent-0",
+      "rank": 0
+    },
+    {
+      "case": "tp2-concurrent-0",
+      "rank": 1
+    },
+    {
+      "case": "tp2-concurrent-2",
+      "rank": 0
+    },
+    {
+      "case": "tp2-concurrent-2",
+      "rank": 1
+    },
+    {
+      "case": "tp2-concurrent-1",
+      "rank": 0
+    },
+    {
+      "case": "tp2-concurrent-1",
+      "rank": 1
+    },
+    {
+      "case": "tp2-after-cancel",
+      "rank": 0
+    },
+    {
+      "case": "tp2-after-cancel",
+      "rank": 1
+    },
+    {
+      "case": "tp2-after-restart",
+      "rank": 0
+    },
+    {
+      "case": "tp2-after-restart",
+      "rank": 1
+    }
+  ],
+  "cold_store_prefix_verified_on_all_three_ranks": true,
+  "all_six_sglang_processes_exited_zero": true,
+  "lmcache_lifespan_cleanup_completed": true,
+  "forced_kills": 0
+}

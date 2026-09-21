@@ -1,0 +1,37 @@
+[
+  {
+    "name": "tp1-baseline",
+    "returncode": 0,
+    "forced_kill": false
+  },
+  {
+    "name": "tp1-external",
+    "returncode": 0,
+    "forced_kill": false
+  },
+  {
+    "name": "tp1-external-restarted",
+    "returncode": 0,
+    "forced_kill": false
+  },
+  {
+    "name": "tp2-baseline",
+    "returncode": 0,
+    "forced_kill": false
+  },
+  {
+    "name": "tp2-external",
+    "returncode": 0,
+    "forced_kill": false
+  },
+  {
+    "name": "tp2-external-restarted",
+    "returncode": 0,
+    "forced_kill": false
+  },
+  {
+    "name": "lmcache",
+    "returncode": -15,
+    "forced_kill": false
+  }
+]
