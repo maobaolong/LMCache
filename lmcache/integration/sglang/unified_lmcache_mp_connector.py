@@ -71,6 +71,7 @@ class UnifiedLMCacheMPConnector:
         self,
         *,
         config_file: Optional[str],
+        config_overrides: Optional[dict[str, Any]] = None,
         model_config: Any,
         tp_size: int,
         tp_rank: int,
@@ -222,7 +223,9 @@ class UnifiedLMCacheMPConnector:
             )
         kv_tensors = [tensor for group in wire_groups for tensor in group.kv_tensors]
 
-        config = load_engine_config_with_overrides(config_file_path=config_file)
+        config = load_engine_config_with_overrides(
+            config_file_path=config_file, overrides=config_overrides
+        )
         if not config.mp_host:  # type: ignore[attr-defined]
             raise ValueError(
                 "LMCache MP config must define mp_host; pass "
@@ -985,6 +988,14 @@ class UnifiedLMCacheMPConnector:
         operation.lookup.locks_held = False
         operation.result = success
         self._cleanup_lookup_result(operation.lookup)
+        logger.info(
+            "External KV retrieve completed: rid=%s rank=%d start=%d end=%d success=%s",
+            operation.request_id,
+            self.tp_rank,
+            operation.start,
+            operation.end,
+            success,
+        )
         return success
 
     def _store_group_blocks_are_valid(
@@ -1153,6 +1164,14 @@ class UnifiedLMCacheMPConnector:
         except Exception:
             logger.exception("LMCache store failed for %s", operation.request_id)
         operation.result = self._sync_success(success) if synchronize else success
+        logger.info(
+            "External KV store completed: rid=%s rank=%d start=%d end=%d success=%s",
+            operation.request_id,
+            self.tp_rank,
+            operation.start,
+            operation.end,
+            operation.result,
+        )
         if (
             not operation.result
             and self._store_submitted_tokens.get(operation.request_id) == operation.end
