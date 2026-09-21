@@ -51,7 +51,7 @@ The run uses BF16, full attention, `kv_both`, colocated serving, the Python serv
 
 - [Independent verification result](evidence/verification.json)
 - [All 36 results](evidence/verdict.json), [source/environment manifest](evidence/manifest.json), [process exit records](evidence/process-exits.json)
-- [Transfer and factory-selection log excerpts](evidence/transfer-events.log), including source-log filenames and line numbers
+- [Transfer and factory-selection log excerpts](evidence/transfer-events.txt), including source-log filenames and line numbers
 - [Complete evidence archive](evidence/h200-tp1-tp2-evidence.tar.gz): 131 evidence files plus a checksum manifest, containing raw server logs, requests, responses, flush/clear results, metrics, backend status snapshots, cancellation events, environment setup logs, and the final GPU snapshot
 - [Archive SHA256](evidence/SHA256SUMS); the archive also contains per-file checksums
 
