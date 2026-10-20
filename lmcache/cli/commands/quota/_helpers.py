@@ -10,6 +10,7 @@ import urllib.request
 
 # First Party
 from lmcache.logging import init_logger
+from lmcache.v1.mp_coordinator.auth import fleet_auth_headers
 
 logger = init_logger(__name__)
 
@@ -54,6 +55,8 @@ def http_request(
 
     Raises:
         SystemExit: On connection error or non-2xx HTTP response.
+        OSError: If the sending key file cannot be read.
+        ValueError: If the sending key sources or key file are invalid.
     """
     body = None
     headers: dict[str, str] = {}
@@ -62,6 +65,9 @@ def http_request(
         headers["Content-Type"] = "application/json"
 
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    # Credentials belong to this configured service, not a redirect destination.
+    for name, value in fleet_auth_headers().items():
+        req.add_unredirected_header(name, value)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())

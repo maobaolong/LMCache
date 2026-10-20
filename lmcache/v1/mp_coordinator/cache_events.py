@@ -35,6 +35,7 @@ from lmcache.v1.mp_coordinator.api import (
     CacheEventEntry,
     CacheEventType,
 )
+from lmcache.v1.mp_coordinator.auth import fleet_auth_headers
 from lmcache.v1.mp_coordinator.schemas import CacheEventsRequest
 from lmcache.v1.mp_observability.event import Event, EventType
 from lmcache.v1.mp_observability.event_bus import EventCallback, EventSubscriber
@@ -118,11 +119,17 @@ class HttpCacheEventSink(CacheEventSink):
     Args:
         coordinator_url: Coordinator base URL.
         timeout: Per-request timeout in seconds.
+
+    The client sends the single key configured in the shared service environment.
+
+    Raises:
+        OSError: If the sending key file cannot be read.
+        ValueError: If the sending key sources or key file are invalid.
     """
 
     def __init__(self, coordinator_url: str, timeout: float = 2.0) -> None:
         self._base_url = coordinator_url.rstrip("/")
-        self._client = httpx.Client(timeout=timeout)
+        self._client = httpx.Client(timeout=timeout, headers=fleet_auth_headers())
         self._dropped_events = 0
 
     def publish(self, batches: list[CacheEventBatch]) -> None:

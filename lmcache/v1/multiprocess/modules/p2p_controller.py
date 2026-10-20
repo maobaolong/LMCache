@@ -28,6 +28,7 @@ from lmcache.v1.distributed.transfer_channel import (
     initialize_transfer_channel_context,
 )
 from lmcache.v1.distributed.transfer_channel.api import TransferChannelAddress
+from lmcache.v1.mp_coordinator.auth import fleet_auth_headers
 from lmcache.v1.mp_observability.otel_init import register_gauge
 from lmcache.v1.multiprocess.config import CoordinatorConfig, P2PConfig
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
@@ -170,6 +171,12 @@ class P2PController(DiscoverableModule):
             discovered peer set.
         request_transport: Request transport exposed by this server and its
             discovered peers.
+
+    Discovery uses the shared service key environment when P2P is enabled.
+
+    Raises:
+        OSError: If the sending key file cannot be read.
+        ValueError: If the sending key sources or key file are invalid.
     """
 
     module_name = "p2p_controller"
@@ -224,6 +231,7 @@ class P2PController(DiscoverableModule):
         Args:
             coordinator_config: Coordinator connection used for peer discovery.
         """
+        headers = fleet_auth_headers()
         initialize_transfer_channel_context(
             self._p2p_config.transfer_engine,
             self._ctx.storage_manager.l1_memory_desc,
@@ -232,7 +240,7 @@ class P2PController(DiscoverableModule):
         )
         self._instances_url = coordinator_config.url.rstrip("/") + "/instances"
         timeout = max(1.0, coordinator_config.heartbeat_interval)
-        self._http_client = httpx.Client(timeout=timeout)
+        self._http_client = httpx.Client(timeout=timeout, headers=headers)
         self._poll_thread = create_periodic_thread(
             name="p2p-controller-thread",
             interval=coordinator_config.heartbeat_interval,

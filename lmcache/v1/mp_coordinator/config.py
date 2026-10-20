@@ -56,6 +56,9 @@ class MPCoordinatorConfig:
     """HTTP bind address and timing parameters for the coordinator.
 
     Attributes:
+        api_key_files: Files containing accepted HTTP API keys. Keys are loaded
+            separately and are never stored in this configuration. Shared service
+            environment variables also supply accepted keys.
         host: Host the coordinator's HTTP server binds to.
         port: Port the coordinator's HTTP server binds to.
         instance_timeout: Seconds without a heartbeat after which an instance is
@@ -140,6 +143,8 @@ class MPCoordinatorConfig:
     event_source_config: HttpCacheEventSourceConfig | KafkaCacheEventSourceConfig = (
         field(default_factory=HttpCacheEventSourceConfig)
     )
+
+    api_key_files: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate timing parameters.

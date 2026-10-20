@@ -21,6 +21,7 @@ import threading
 # First Party
 from lmcache.logging import init_logger
 from lmcache.v1.mp_coordinator.api import BlendMatch, BlendNamespace
+from lmcache.v1.mp_coordinator.auth import fleet_auth_headers
 from lmcache.v1.mp_coordinator.schemas import encode_tokens
 
 logger = init_logger(__name__)
@@ -72,8 +73,12 @@ class BlendCoordinatorClient:
             match_concurrency: Max match round-trips in flight at once (the
                 match dispatch pool size). Must be >= 1.
 
+        The built-in HTTP client uses the shared service key environment.
+        An injected ``request_fn`` owns its authentication.
+
         Raises:
-            ValueError: If ``match_concurrency`` is not positive.
+            OSError: If the sending key file cannot be read.
+            ValueError: If ``match_concurrency`` or sending credentials are invalid.
         """
         if match_concurrency < 1:
             raise ValueError(f"match_concurrency must be >= 1, got {match_concurrency}")
@@ -83,7 +88,7 @@ class BlendCoordinatorClient:
             # Third Party
             import httpx
 
-            client = httpx.Client(timeout=request_timeout)
+            client = httpx.Client(timeout=request_timeout, headers=fleet_auth_headers())
             base = base_url.rstrip("/")
 
             def _http_request(method: str, path: str, payload: dict) -> dict:
@@ -176,7 +181,8 @@ class BlendCoordinatorClient:
             module then runs purely local).
 
         Raises:
-            ValueError: If ``match_concurrency`` is not positive.
+            OSError: If the sending key file cannot be read.
+            ValueError: If ``match_concurrency`` or sending credentials are invalid.
         """
         url = (url or "").strip()
         if not url:

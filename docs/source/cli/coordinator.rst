@@ -33,6 +33,11 @@ Options
 
    * - Flag
      - Description
+   * - ``--api-key-file PATH``
+     - Accept a key from a one-line file. Repeat during rotation.
+       ``--http-api-key-file`` is an alias. Shared service environment variables
+       also supply keys; see :doc:`/mp/coordinator`. Only ``/healthz`` stays public
+       when keys are configured.
    * - ``--host HOST``
      - Bind address for the coordinator's HTTP server (default: ``0.0.0.0``).
    * - ``--port PORT``

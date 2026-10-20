@@ -13,6 +13,7 @@ import json
 # First Party
 from lmcache.cli.commands.base import BaseCommand
 from lmcache.logging import init_logger
+from lmcache.security.api_key import add_api_key_args
 
 logger = init_logger(__name__)
 
@@ -39,13 +40,14 @@ class CoordinatorCommand(BaseCommand):
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         """Add coordinator-specific arguments to the parser.
 
-        Each flag defaults to ``None`` so that :meth:`execute` can tell an
-        unset flag from an explicit one and leave the corresponding
-        :class:`MPCoordinatorConfig` default in place.
+        Service settings default to ``None`` so that :meth:`execute` leaves
+        the corresponding :class:`MPCoordinatorConfig` default in place.
+        Key-file options accumulate through the shared authentication parser.
 
         Args:
             parser: The ``ArgumentParser`` for this subcommand.
         """
+        add_api_key_args(parser)
         parser.add_argument(
             "--host",
             type=str,
@@ -257,7 +259,8 @@ class CoordinatorCommand(BaseCommand):
         Raises:
             SystemExit: When coordinator dependencies are not installed.
             ValueError: When ``--event-transport kafka`` is selected without
-                ``--kafka-bootstrap-servers``.
+                ``--kafka-bootstrap-servers``, or an invalid key file is configured.
+            OSError: If an accepted key file cannot be read.
         """
         # Standard
         import sys
@@ -321,7 +324,7 @@ class CoordinatorCommand(BaseCommand):
         extra_config = _parse_extra_config(args.extra_config)
         if extra_config is not None:
             fields["extra_config"] = extra_config
-        config = MPCoordinatorConfig(**fields)
+        config = MPCoordinatorConfig(api_key_files=tuple(args.api_key_file), **fields)
 
         init_coordinator_metrics(config)
         app = create_app(config)

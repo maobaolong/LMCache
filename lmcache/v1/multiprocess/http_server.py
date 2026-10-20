@@ -20,6 +20,7 @@ from lmcache.v1.distributed.config import (
     l1_exposes_single_memory_region,
     parse_args_to_config,
 )
+from lmcache.v1.mp_coordinator.auth import fleet_auth_headers
 from lmcache.v1.mp_coordinator.cache_events import (
     maybe_create_cache_event_subscriber,
 )
@@ -84,6 +85,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     mp_config = _configs["mp"]
     coordinator_config = _configs.get("coordinator") or DEFAULT_COORDINATOR_CONFIG
+    http_config = _configs.get("http")
+    coordinator_headers = (
+        fleet_auth_headers()
+        if coordinator_config.url and http_config is not None
+        else {}
+    )
 
     result = run_cache_server(
         mp_config=mp_config,
@@ -125,11 +132,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # coordinator config has a URL). A generic HTTP client sends the requests;
     # the keep_registered task registers, heartbeats, and deregisters on
     # shutdown. Best-effort: failures are logged and retried, never fatal.
-    http_config = _configs.get("http")
     coordinator_client = None
     coordinator_registration_task = None
     if coordinator_config.url and http_config is not None:
-        coordinator_client = httpx.AsyncClient(timeout=10.0)
+        coordinator_client = httpx.AsyncClient(
+            timeout=10.0, headers=coordinator_headers
+        )
         # Canonical id resolved by run_cache_server above; shared with
         # the OTel service.instance.id so membership matches metrics/traces.
         coordinator_registration_task = asyncio.create_task(

@@ -146,8 +146,11 @@ def test_an_unreachable_coordinator_stops_the_replay_with_a_clean_exit(tmp_path)
     assert exit_info.value.code == 1
 
 
-def test_the_stream_is_delivered_to_the_coordinator(tmp_path, monkeypatch):
+@pytest.mark.parametrize("api_key", [None, "replay-test-key"])
+def test_the_stream_is_delivered_to_the_coordinator(tmp_path, monkeypatch, api_key):
     """End to end through the command, against the real app in-process."""
+    if api_key is not None:
+        monkeypatch.setenv("LMCACHE_API_KEY", api_key)
     path = _events_file(str(tmp_path / "events.lct"))
     config = MPCoordinatorConfig(health_check_interval=0.0, eviction_check_interval=0.0)
     app = create_app(config)
@@ -155,14 +158,18 @@ def test_the_stream_is_delivered_to_the_coordinator(tmp_path, monkeypatch):
     monkeypatch.setattr(
         httpx,
         "AsyncClient",
-        lambda **_kw: real_client(transport=httpx.ASGITransport(app=app)),
+        lambda **kwargs: real_client(transport=httpx.ASGITransport(app=app), **kwargs),
     )
 
     run_events_replay(_parse([path, "--coordinator-url", "http://coordinator"]))
 
     async def inspect() -> tuple[list, int]:
         async with real_client(
-            transport=httpx.ASGITransport(app=app), base_url="http://coordinator"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://coordinator",
+            headers={"Authorization": f"Bearer {api_key}"}
+            if api_key is not None
+            else {},
         ) as client:
             instances = (await client.get("/instances")).json()["instances"]
             stats = (await client.get("/directory/stats")).json()

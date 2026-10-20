@@ -53,14 +53,37 @@ and POSTs / DELETEs to that mp server's **specific** existing endpoint
 command channel and no per-instance connection state — just an HTTP call to
 the relevant resource.
 
+## Authentication
+
+The app uses `lmcache.security.http.HTTPBearerAuthenticationMiddleware` before
+all discovered and controller-provided routes. `APIKeyVerifier` loads accepted
+keys through `load_service_api_keys(config.api_key_files)` before collaborators
+are built. Config stores paths, never resolved credentials. Only `/healthz`
+is public; metrics and API documentation require the same Bearer key.
+
+`auth.fleet_auth_headers()` reuses the shared request-client key loader and
+Bearer-header formatter. Every independently constructed fleet HTTP client
+uses it: MP registration, synchronous size binding, event ingest, P2P discovery,
+blend lookup, operator commands and the coordinator's outbound control client.
+Clients send one configured environment key, independent of the coordinator's
+accepted rotation set. No key means no header, preserving existing deployments.
+The initial policy is one trusted fleet credential, not per-tenant authorization.
+
+HTTPX clients do not follow redirects by default. The urllib CLI paths use
+unredirected headers so a redirect cannot forward the credential to another
+service. The coordinator's outbound client loads its own credential rather
+than forwarding an operator's incoming Authorization header. Kafka transport
+credentials and the separate legacy controller API server are outside scope.
+
 ## Layout
 
 ```
 lmcache/v1/mp_coordinator/
   app.py                # create_app + lifespan + router discovery + health/eviction loops
   __main__.py           # uvicorn entrypoint (`python -m lmcache.v1.mp_coordinator`)
-  config.py             # MPCoordinatorConfig (CLI flags only, no env vars)
+  config.py             # MPCoordinatorConfig (CLI settings and key-file paths)
   schemas.py            # Pydantic request/response models (shared wire contract)
+  auth.py               # locally configured fleet HTTP sending credential
   registrar.py          # mp-server-side register/heartbeat/deregister helpers
   blend_index.py      # BlendIndex: fragment (blend) lookup over those bindings
   blend_client.py       # mp-server-side fragment-lookup query client

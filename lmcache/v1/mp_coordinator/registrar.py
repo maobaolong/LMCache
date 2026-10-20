@@ -23,6 +23,7 @@ import httpx
 
 # First Party
 from lmcache.logging import init_logger
+from lmcache.v1.mp_coordinator.auth import fleet_auth_headers
 from lmcache.v1.mp_coordinator.schemas import (
     ChunkSizeBindRequest,
     ChunkSizeBindResponse,
@@ -43,12 +44,27 @@ def bind_coordinator_chunk_size(
     chunk_size: int,
     timeout: float = _DEFAULT_CHUNK_SIZE_BIND_TIMEOUT,
 ) -> int:
-    """Synchronously bind coordinator hashing to an MP server's final size."""
+    """Bind coordinator hashing to the final size using the fleet credential.
+
+    Args:
+        base_url: Coordinator HTTP base URL.
+        chunk_size: Final chunk size accepted by the MP server.
+        timeout: HTTP request timeout in seconds.
+
+    Returns:
+        The chunk size accepted by the coordinator.
+
+    Raises:
+        httpx.HTTPError: If negotiation fails or returns a non-2xx response.
+        OSError: If the sending key file cannot be read.
+        ValueError: If sending credentials or the response are invalid.
+    """
     body = ChunkSizeBindRequest(chunk_size=chunk_size)
     response = httpx.put(
         f"{base_url.rstrip('/')}/config/chunk-size",
         json=body.model_dump(mode="json"),
         timeout=timeout,
+        headers=fleet_auth_headers(),
     )
     response.raise_for_status()
     return ChunkSizeBindResponse.model_validate(response.json()).chunk_size

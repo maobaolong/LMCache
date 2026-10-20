@@ -29,11 +29,53 @@ See :doc:`/cli/coordinator` for the full flag list. Equivalently, the
 coordinator can be launched as a module with
 ``python3 -m lmcache.v1.mp_coordinator``, which accepts the same flags.
 
+Authentication
+--------------
+
+Configure one fleet credential on the coordinator, MP servers and operator
+commands:
+
+.. code-block:: bash
+
+    export LMCACHE_API_KEY_FILE=/run/secrets/lmcache-api-key
+    lmcache coordinator --host 0.0.0.0 --port 9300
+    # On each MP server, with the same key environment:
+    lmcache server --coordinator-url http://coordinator:9300
+    lmcache query coordinator --api instances --url http://coordinator:9300
+
+The file contains one key on one line. ``LMCACHE_API_KEY`` supplies a key
+value instead. With neither source configured, authentication stays disabled
+for compatibility. Deploy TLS at a trusted reverse proxy when credentials
+cross an untrusted network.
+
+With a key configured, only ``GET /healthz`` stays public. All other paths,
+including ``/metrics``, ``/docs`` and ``/openapi.json``, require
+``Authorization: Bearer <key>``. Missing or invalid credentials return HTTP
+401 with a Bearer challenge before the route can change coordinator state.
+Configure Prometheus's ``authorization`` setting when scraping ``/metrics``.
+
+The coordinator accepts repeated ``--api-key-file PATH`` options for rotation;
+``--http-api-key-file`` is an alias. CLI files and environment sources are
+cumulative on the server. To rotate, accept old and new files, switch clients
+to the new key, then remove the old accepted file. Each client sends exactly
+one environment-supplied key; configuring both the value and file sources is
+an error. The legacy ``LMCACHE_HTTP_API_KEY`` and
+``LMCACHE_HTTP_API_KEY_FILE`` variables are fallbacks when their corresponding
+canonical variables are empty or unset.
+
+Registration, heartbeat, chunk-size negotiation, event ingest, P2P discovery,
+CacheBlend lookup, query, quota and trace replay use this credential.
+Coordinator-to-MP eviction, prefetch and delete calls also use the locally
+configured sending key; incoming operator credentials are never forwarded.
+This version assumes one shared fleet key, without per-instance or per-tenant
+permissions. Kafka authentication is configured separately on Kafka.
+
 Configuration
 -------------
 
-The coordinator is configured through CLI flags only; every flag left unset
-keeps the default below.
+The coordinator settings below come from CLI flags. Authentication also reads
+the shared service key environment variables described below. Unset flags
+keep their defaults.
 
 .. list-table::
    :header-rows: 1

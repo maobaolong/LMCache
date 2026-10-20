@@ -138,6 +138,7 @@ class TestCoordinatorCommandExecute:
         )
 
         args = argparse.Namespace(
+            api_key_file=[],
             host=None,
             port=None,
             instance_timeout=None,
@@ -213,6 +214,7 @@ class TestCoordinatorCommandExecute:
         monkeypatch.setenv("LMCACHE_MP_COORDINATOR_OTLP_ENDPOINT", "http://x:4317")
 
         args = argparse.Namespace(
+            api_key_file=[],
             host=None,
             port=None,
             instance_timeout=None,

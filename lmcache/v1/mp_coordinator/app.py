@@ -29,6 +29,9 @@ import httpx
 
 # First Party
 from lmcache.logging import init_logger
+from lmcache.security.api_key import APIKeyVerifier, load_service_api_keys
+from lmcache.security.http import HTTPBearerAuthenticationMiddleware
+from lmcache.v1.mp_coordinator.auth import fleet_auth_headers
 from lmcache.v1.mp_coordinator.background_loops import (
     BackgroundLoops,
     EventLoopMonitor,
@@ -89,8 +92,14 @@ def create_app(config: MPCoordinatorConfig) -> FastAPI:
     Returns:
         A configured FastAPI application. ``app.state`` carries the shared
         collaborators (``config`` plus the :class:`CoordinatorContext`); all
-        ``http_apis`` routers are registered.
+        ``http_apis`` routers are registered. When service keys are configured,
+        only ``/healthz`` is public.
+
+    Raises:
+        OSError: If an API key file cannot be read.
+        ValueError: If an API key file is empty or contains multiple lines.
     """
+    authentication = APIKeyVerifier(load_service_api_keys(config.api_key_files))
     views = build_views(config)
     registry = views.get(InstanceRegistry)
     server_configs = views.get(ServerConfigRegistry)
@@ -214,7 +223,7 @@ def create_app(config: MPCoordinatorConfig) -> FastAPI:
             # Bound to the running event loop, so it cannot be built with
             # the rest of the app.
             outbound_client = await stack.enter_async_context(
-                httpx.AsyncClient(timeout=30.0)
+                httpx.AsyncClient(timeout=30.0, headers=fleet_auth_headers())
             )
             app.state.outbound_client = outbound_client
             if config.checkpoint_path:
@@ -271,6 +280,8 @@ def create_app(config: MPCoordinatorConfig) -> FastAPI:
                 await asyncio.gather(*timers, return_exceptions=True)
 
     app = FastAPI(title="LMCache MP Coordinator", version="1.0.0", lifespan=lifespan)
+    app.state.http_authentication = authentication
+    app.add_middleware(HTTPBearerAuthenticationMiddleware, public_paths={"/healthz"})
     app.state.ctx = ctx
     # Out-of-context collaborator kept on app.state directly.
     app.state.config = config

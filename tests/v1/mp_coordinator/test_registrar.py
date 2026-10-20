@@ -61,6 +61,7 @@ def test_bind_coordinator_chunk_size(monkeypatch):
         f"{_BASE}/config/chunk-size",
         json={"chunk_size": 640},
         timeout=3.0,
+        headers={},
     )
 
 

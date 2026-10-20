@@ -27,6 +27,7 @@ import urllib.request
 from lmcache.cli.commands.describe import fmt_bytes
 from lmcache.cli.metrics import Metrics
 from lmcache.logging import init_logger
+from lmcache.v1.mp_coordinator.auth import fleet_auth_headers
 
 logger = init_logger(__name__)
 
@@ -53,9 +54,15 @@ def _fetch(url: str, timeout: int = _TIMEOUT) -> str:
     Raises:
         SystemExit: On a connection failure or a non-2xx status, reported as
             a CLI error rather than a traceback.
+        OSError: If the sending key file cannot be read.
+        ValueError: If the sending key sources or key file are invalid.
     """
+    request = urllib.request.Request(url)
+    # urllib copies ordinary headers to redirected requests, including other hosts.
+    for name, value in fleet_auth_headers().items():
+        request.add_unredirected_header(name, value)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read().decode()
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")
@@ -85,6 +92,11 @@ def get_text(url: str) -> str:
 
     Returns:
         The response body.
+
+    Raises:
+        SystemExit: If the HTTP request fails.
+        OSError: If the sending key file cannot be read.
+        ValueError: If the sending key sources or key file are invalid.
     """
     return _fetch(url)
 
@@ -99,7 +111,9 @@ def get_json(url: str) -> Any:
         The parsed body.
 
     Raises:
-        SystemExit: If the reply is not JSON.
+        SystemExit: If the HTTP request fails or the reply is not JSON.
+        OSError: If the sending key file cannot be read.
+        ValueError: If the sending key sources or key file are invalid.
     """
     body = _fetch(url)
     try:

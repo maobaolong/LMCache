@@ -14,6 +14,7 @@ import sys
 from lmcache.cli.commands.base import BaseCommand
 from lmcache.cli.metrics import Metrics, StreamHandler, get_formatter
 from lmcache.logging import init_logger
+from lmcache.v1.mp_coordinator.auth import fleet_auth_headers
 
 logger = init_logger(__name__)
 
@@ -81,6 +82,10 @@ def run_events_replay(args: argparse.Namespace) -> None:
 
     Args:
         args: Parsed CLI arguments.
+
+    Raises:
+        OSError: If the sending key file cannot be read.
+        ValueError: If the sending key sources or key file are invalid.
     """
     # Third Party
     import httpx
@@ -107,7 +112,7 @@ def run_events_replay(args: argparse.Namespace) -> None:
 
     async def _run() -> EventsReplayResult:
         async with (
-            httpx.AsyncClient(timeout=30.0) as client,
+            httpx.AsyncClient(timeout=30.0, headers=fleet_auth_headers()) as client,
             CoordinatorTarget(
                 client,
                 args.coordinator_url,
