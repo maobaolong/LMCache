@@ -56,6 +56,14 @@ PYBIND11_MODULE(lmcache_native, m) {
       .value("H2D", TransferDirection::H2D)
       .value("D2H", TransferDirection::D2H);
 
+  py::enum_<MemoryObjectPointerSource>(m, "MemoryObjectPointerSource")
+      .value("HOST_VECTOR", MemoryObjectPointerSource::HOST_VECTOR)
+      .value("DEVICE_ARRAY", MemoryObjectPointerSource::DEVICE_ARRAY);
+
+  py::enum_<MemoryObjectLayout>(m, "MemoryObjectLayout")
+      .value("KV_LAYER_TOKEN", MemoryObjectLayout::KV_LAYER_TOKEN)
+      .value("LAYER_KV_TOKEN", MemoryObjectLayout::LAYER_KV_TOKEN);
+
   py::class_<PageBufferShapeDesc>(m, "PageBufferShapeDesc", py::dynamic_attr())
       .def(py::init<>())
       .def_readwrite("kv_size", &PageBufferShapeDesc::kv_size)
@@ -73,7 +81,12 @@ PYBIND11_MODULE(lmcache_native, m) {
                        std::vector<int64_t> lmcache_objects_ptrs,
                        PageBufferShapeDesc shape_desc, int lmcache_chunk_size,
                        int engine_kv_format, uintptr_t block_ids_base,
-                       int64_t block_ids_capacity) {
+                       int64_t block_ids_capacity,
+                       MemoryObjectPointerSource object_pointer_source,
+                       uintptr_t lmcache_objects_device_base,
+                       int64_t lmcache_objects_device_capacity,
+                       MemoryObjectLayout object_layout,
+                       int64_t object_layer_stride_elems) {
              return KernelGroupSpec{
                  paged_buffer_ptrs,
                  std::move(lmcache_objects_ptrs),
@@ -81,12 +94,23 @@ PYBIND11_MODULE(lmcache_native, m) {
                  lmcache_chunk_size,
                  static_cast<EngineKVFormat>(engine_kv_format),
                  block_ids_base,
-                 block_ids_capacity};
+                 block_ids_capacity,
+                 object_pointer_source,
+                 lmcache_objects_device_base,
+                 lmcache_objects_device_capacity,
+                 object_layout,
+                 object_layer_stride_elems};
            }),
            py::arg("paged_buffer_ptrs"), py::arg("lmcache_objects_ptrs"),
            py::arg("shape_desc"), py::arg("lmcache_chunk_size"),
            py::arg("engine_kv_format"), py::arg("block_ids_base"),
-           py::arg("block_ids_capacity"));
+           py::arg("block_ids_capacity"),
+           py::arg("object_pointer_source") =
+               MemoryObjectPointerSource::HOST_VECTOR,
+           py::arg("lmcache_objects_device_base") = 0,
+           py::arg("lmcache_objects_device_capacity") = 0,
+           py::arg("object_layout") = MemoryObjectLayout::KV_LAYER_TOKEN,
+           py::arg("object_layer_stride_elems") = 0);
 
   m.def("is_kv_list", &is_kv_list, py::arg("format"),
         "Return whether the format stores KV as a list of per-token KV "

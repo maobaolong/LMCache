@@ -41,6 +41,18 @@ class TransferDirection(IntEnum):
     H2D = 0
     D2H = 1
 
+class MemoryObjectPointerSource(IntEnum):
+    """Selects where a transfer kernel reads LMCache object pointers."""
+
+    HOST_VECTOR = 0
+    DEVICE_ARRAY = 1
+
+class MemoryObjectLayout(IntEnum):
+    """Specifies the KV/layer axis order inside an LMCache object."""
+
+    KV_LAYER_TOKEN = 0
+    LAYER_KV_TOKEN = 1
+
 class PageBufferShapeDesc:
     """Descriptor for one engine page-buffer layout."""
 
@@ -68,6 +80,11 @@ class KernelGroupSpec:
         engine_kv_format: int,
         block_ids_base: int,
         block_ids_capacity: int,
+        object_pointer_source: MemoryObjectPointerSource = ...,
+        lmcache_objects_device_base: int = ...,
+        lmcache_objects_device_capacity: int = ...,
+        object_layout: MemoryObjectLayout = ...,
+        object_layer_stride_elems: int = ...,
     ) -> None: ...
 
 def is_kv_list(format: EngineKVFormat) -> bool:

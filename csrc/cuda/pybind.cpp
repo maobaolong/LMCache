@@ -145,10 +145,13 @@ PYBIND11_MODULE(cuda_ops, m) {
           py::arg("skip_prefix_n_blocks"));
   py::class_<BatchStep>(m, "BatchStep")
       .def(py::init([](std::vector<StagingCopy> staging,
-                       std::vector<LaunchVar> launches) {
-             return BatchStep{std::move(staging), std::move(launches)};
+                       std::vector<LaunchVar> launches,
+                       uintptr_t completion_event) {
+             return BatchStep{std::move(staging), std::move(launches),
+                              completion_event};
            }),
-           py::arg("staging"), py::arg("launches"));
+           py::arg("staging"), py::arg("launches"),
+           py::arg("completion_event") = 0);
   m.def(
       "execute_object_group_transfer",
       [](int direction, const torch::Device& device,

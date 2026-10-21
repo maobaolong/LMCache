@@ -83,4 +83,13 @@ struct KernelGroupSpec {
   uintptr_t block_ids_base;  // device int64* base; sliced via block_ids_offset
   int64_t block_ids_capacity;  // total int64 elements behind block_ids_base;
                                // bounds-checks each slice in the executor
+  MemoryObjectPointerSource object_pointer_source;
+  // Device int64* and its element count. Used only with DEVICE_ARRAY; the
+  // caller owns the allocation and keeps it alive through plan execution.
+  uintptr_t lmcache_objects_device_base;
+  int64_t lmcache_objects_device_capacity;
+  MemoryObjectLayout object_layout;
+  // Source-dtype elements between consecutive layers for LAYER_KV_TOKEN.
+  // Zero selects the tight [layer, kv, token, hidden] stride.
+  int64_t object_layer_stride_elems;
 };

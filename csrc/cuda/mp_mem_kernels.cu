@@ -27,8 +27,8 @@ namespace {
  * 4. The grid will take over (2, NB, NL) dimensions. No matter what the actual
  * layout in memory is, we will calculate the global offset for the start of the
  * block
- * 5. For LMCache, we assume it is always using 2LTD layout, e.g.,
- * [2, L, 256, NH * HS], where 256 means that 256 tokens
+ * 5. The transfer plan declares whether each LMCache object is laid out as
+ * [KV, layer, token, hidden] or [layer, KV, token, hidden].
  */
 
 /**
@@ -144,11 +144,43 @@ __device__ inline size_t calculate_lmcache_global_offset(
     const int lmcache_chunk_size,  // e.g., 256
     const PageBufferShapeDesc shape_desc) {
   size_t scalars_per_token = shape_desc.scalars_per_token<ScalarType>();
-  // LMCache is using 2LTD all the times
+  // Default LMCache object layout: [KV, layer, token, hidden].
   return token_offset_in_lmcache_object * scalars_per_token +
          layer_idx * lmcache_chunk_size * scalars_per_token +
          k_or_v * shape_desc.nl * lmcache_chunk_size * scalars_per_token;
 }
+
+struct KvLayerTokenOffset {
+  template <typename ScalarType, EngineKVFormat format>
+  __device__ inline size_t offset(const int k_or_v, const int token_offset,
+                                  const int layer_idx,
+                                  const int lmcache_chunk_size,
+                                  const PageBufferShapeDesc& shape_desc) const {
+    return calculate_lmcache_global_offset<ScalarType, format>(
+        k_or_v, token_offset, layer_idx, lmcache_chunk_size, shape_desc);
+  }
+};
+
+struct LayerKvTokenOffset {
+  int64_t layer_stride_elems;
+
+  template <typename ScalarType, EngineKVFormat format>
+  __device__ inline size_t offset(const int k_or_v, const int token_offset,
+                                  const int layer_idx,
+                                  const int lmcache_chunk_size,
+                                  const PageBufferShapeDesc& shape_desc) const {
+    const size_t scalars_per_token = shape_desc.scalars_per_token<ScalarType>();
+    const size_t scalars_per_layer =
+        layer_stride_elems > 0
+            ? static_cast<size_t>(layer_stride_elems) *
+                  shape_desc.element_size / sizeof(ScalarType)
+            : static_cast<size_t>(shape_desc.kv_size) * lmcache_chunk_size *
+                  scalars_per_token;
+    return layer_idx * scalars_per_layer +
+           k_or_v * lmcache_chunk_size * scalars_per_token +
+           token_offset * scalars_per_token;
+  }
+};
 
 /**
  * Calculate the local offset for the current token against the start of the
@@ -205,11 +237,13 @@ __device__ inline void warp_copy(ScalarType* __restrict__ dst,
   }
 }
 
-template <typename ScalarType, bool lmcache_to_engine, EngineKVFormat format>
+template <typename ScalarType, bool lmcache_to_engine, EngineKVFormat format,
+          typename ObjectOffset>
 __device__ void multi_layer_block_transfer_single_block(
     ScalarType* __restrict__ lmcache_object,
     ScalarType** __restrict__ paged_buffer_ptrs, const int engine_block_idx,
     const int offset_in_lmcache_block, const PageBufferShapeDesc shape_desc,
+    const ObjectOffset object_offset,
     const int lmcache_chunk_size  // e.g., 256, used to calculate global offset
                                   // in LMCache object
 ) {
@@ -223,7 +257,7 @@ __device__ void multi_layer_block_transfer_single_block(
       calculate_engine_global_offset<ScalarType, format>(
           k_or_v, engine_block_idx, layer_idx, shape_desc);
   const size_t lmcache_global_offset =
-      calculate_lmcache_global_offset<ScalarType, format>(
+      object_offset.template offset<ScalarType, format>(
           k_or_v, offset_in_lmcache_block, layer_idx, lmcache_chunk_size,
           shape_desc);
   ScalarType* paged_buffer_layer_ptr;
@@ -289,17 +323,29 @@ __device__ void multi_layer_block_transfer_single_block(
   }
 }
 
-template <typename ScalarType, bool lmcache_to_engine, EngineKVFormat format>
+template <typename ScalarType>
+__device__ inline ScalarType* lmcache_object_at(
+    const MemoryObj4<ScalarType>& objects, const int idx) {
+  return objects.objects[idx];
+}
+
+template <typename ScalarType>
+__device__ inline ScalarType* lmcache_object_at(ScalarType* const* objects,
+                                                const int idx) {
+  return objects[idx];
+}
+
+template <typename ScalarType, bool lmcache_to_engine, EngineKVFormat format,
+          typename ObjectPointers, typename ObjectOffset>
 __global__ void multi_layer_block_transfer_kernel(
-    MemoryObj4<ScalarType> lmcache_objects,
-    ScalarType** __restrict__ paged_buffer_ptrs,
+    ObjectPointers lmcache_objects, ScalarType** __restrict__ paged_buffer_ptrs,
     const int64_t* engine_block_ids,
     const int num_blocks_per_object,  // e.g. 16 for lmcache chunk size =
                                       // 256 and block size = 16
     const PageBufferShapeDesc shape_desc,
     const int lmcache_chunk_size,  // e.g., 256, used to calculate global offset
                                    // in LMCache object
-    const int skip_prefix_n_blocks) {
+    const int skip_prefix_n_blocks, const ObjectOffset object_offset) {
   // blockIdx.y spans all blocks across all objects (total_blocks).
   // Derive which object and local block index from the flat index.
   const int flat_block_idx = blockIdx.y;
@@ -312,17 +358,18 @@ __global__ void multi_layer_block_transfer_kernel(
   const int engine_block_idx = engine_block_ids[flat_block_idx];
   multi_layer_block_transfer_single_block<ScalarType, lmcache_to_engine,
                                           format>(
-      lmcache_objects.objects[obj_idx], paged_buffer_ptrs, engine_block_idx,
+      lmcache_object_at(lmcache_objects, obj_idx), paged_buffer_ptrs,
+      engine_block_idx,
       block_idx_in_object * shape_desc.bs,  // offset in LMCache object
-      shape_desc, lmcache_chunk_size);
+      shape_desc, object_offset, lmcache_chunk_size);
 }
 
 #define LAUNCH_KERNEL(DIRECTION, FORMAT)                                 \
   multi_layer_block_transfer_kernel<ScalarType, DIRECTION, FORMAT>       \
-      <<<grid, block, 0, stream>>>(lmcache_obj4, paged_buffer_ptrs,      \
+      <<<grid, block, 0, stream>>>(lmcache_objects, paged_buffer_ptrs,   \
                                    block_ids_ptr, num_blocks_per_object, \
                                    shape_desc, lmcache_chunk_size,       \
-                                   skip_prefix_n_blocks);                \
+                                   skip_prefix_n_blocks, object_offset); \
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
 #define DISPATCH_FORMAT(DIRECTION)                                      \
@@ -380,19 +427,16 @@ __global__ void multi_layer_block_transfer_kernel(
                   static_cast<int>(engine_kv_format));                  \
   }
 
-template <typename ScalarType>
-void multi_layer_block_kv_transfer_templated(
-    const torch::Tensor& paged_buffer_ptrs_tensor,
-    std::vector<int64_t> lmcache_objects_ptrs, const torch::Tensor& block_ids,
-    const torch::Device& device, TransferDirection direction,
-    PageBufferShapeDesc shape_desc, int lmcache_chunk_size,
-    EngineKVFormat engine_kv_format, int skip_prefix_n_blocks) {
-  // --- Validation ---
-  int num_objects = static_cast<int>(lmcache_objects_ptrs.size());
-  TORCH_CHECK(num_objects >= 1 && num_objects <= 4,
-              "Expected 1-4 LMCache objects, got ", num_objects);
-
-  int total_blocks = block_ids.size(0);
+template <typename ScalarType, typename ObjectPointers, typename ObjectOffset>
+void launch_multi_layer_block_transfer(
+    ObjectPointers lmcache_objects, int num_objects,
+    ScalarType** paged_buffer_ptrs, const int64_t* block_ids_ptr,
+    int total_blocks, TransferDirection direction,
+    const PageBufferShapeDesc& shape_desc, int lmcache_chunk_size,
+    EngineKVFormat engine_kv_format, int skip_prefix_n_blocks,
+    cudaStream_t stream, ObjectOffset object_offset) {
+  TORCH_CHECK(num_objects >= 1, "Expected at least 1 LMCache object, got ",
+              num_objects);
   TORCH_CHECK(total_blocks % num_objects == 0, "block_ids length (",
               total_blocks, ") must be divisible by num_objects (", num_objects,
               ")");
@@ -403,19 +447,45 @@ void multi_layer_block_kv_transfer_templated(
               num_blocks_per_object * shape_desc.bs,
               ") must equal lmcache_chunk_size (", lmcache_chunk_size, ")");
 
-  // --- Build MemoryObj4 ---
-  MemoryObj4<ScalarType> lmcache_obj4;
-  lmcache_obj4.num_objects = num_objects;
-  for (int i = 0; i < 4; ++i) {
-    lmcache_obj4.objects[i] =
-        (i < num_objects)
-            ? reinterpret_cast<ScalarType*>(lmcache_objects_ptrs[i])
-            : nullptr;
-  }
+  // --- Grid and block dimensions ---
+  int elements_per_head = shape_desc.hs * shape_desc.element_size /
+                          static_cast<int>(sizeof(ScalarType));
+  int thread_dim_x = std::min(elements_per_head, 32);
+  int thread_dim_y = shape_desc.nh;
+  TORCH_CHECK(thread_dim_y <= 32, "Number of heads (", thread_dim_y,
+              ") exceeds max threads per block in y-dim (32). This"
+              " should never happen in normal LLMs");
+  int thread_dim_z =
+      std::min(shape_desc.bs, 1024 / (thread_dim_x * thread_dim_y));
+  thread_dim_z = std::min(thread_dim_z, 64);  // max threads per block in z-dim
 
-  // --- Build paged buffer pointer array ---
-  ScalarType** paged_buffer_ptrs =
-      reinterpret_cast<ScalarType**>(paged_buffer_ptrs_tensor.data_ptr());
+  dim3 block(thread_dim_x, thread_dim_y, thread_dim_z);
+  dim3 grid(shape_desc.kv_size, total_blocks, shape_desc.nl);
+
+  if (direction == TransferDirection::H2D) {
+    DISPATCH_FORMAT(true);
+  } else {
+    DISPATCH_FORMAT(false);
+  }
+}
+
+template <typename ScalarType>
+void multi_layer_block_kv_transfer_templated(
+    const torch::Tensor& paged_buffer_ptrs_tensor,
+    std::vector<int64_t> lmcache_objects_ptrs, const torch::Tensor& block_ids,
+    const torch::Device& device, TransferDirection direction,
+    PageBufferShapeDesc shape_desc, int lmcache_chunk_size,
+    EngineKVFormat engine_kv_format, int skip_prefix_n_blocks) {
+  const int num_objects = static_cast<int>(lmcache_objects_ptrs.size());
+  TORCH_CHECK(num_objects >= 1 && num_objects <= 4,
+              "Expected 1-4 LMCache objects, got ", num_objects);
+
+  MemoryObj4<ScalarType> lmcache_obj4{};
+  lmcache_obj4.num_objects = num_objects;
+  for (int i = 0; i < num_objects; ++i) {
+    lmcache_obj4.objects[i] =
+        reinterpret_cast<ScalarType*>(lmcache_objects_ptrs[i]);
+  }
 
   const at::cuda::OptionalCUDAGuard device_guard(device);
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
@@ -437,28 +507,121 @@ void multi_layer_block_kv_transfer_templated(
   }
 #endif
 
-  // --- block_ids is a GPU int64 tensor, read directly ---
-  const int64_t* block_ids_ptr = block_ids.data_ptr<int64_t>();
+  launch_multi_layer_block_transfer<ScalarType>(
+      lmcache_obj4, num_objects,
+      reinterpret_cast<ScalarType**>(paged_buffer_ptrs_tensor.data_ptr()),
+      block_ids.data_ptr<int64_t>(), static_cast<int>(block_ids.size(0)),
+      direction, shape_desc, lmcache_chunk_size, engine_kv_format,
+      skip_prefix_n_blocks, stream, KvLayerTokenOffset{});
+}
 
-  // --- Grid and block dimensions ---
-  int elements_per_head = shape_desc.hs * shape_desc.element_size /
-                          static_cast<int>(sizeof(ScalarType));
-  int thread_dim_x = std::min(elements_per_head, 32);
-  int thread_dim_y = shape_desc.nh;
-  TORCH_CHECK(thread_dim_y <= 32, "Number of heads (", thread_dim_y,
-              ") exceeds max threads per block in y-dim (32). This"
-              " should never happen in normal LLMs");
-  int thread_dim_z =
-      std::min(shape_desc.bs, 1024 / (thread_dim_x * thread_dim_y));
-  thread_dim_z = std::min(thread_dim_z, 64);  // max threads per block in z-dim
+template <typename ScalarType>
+void launch_kernel_group(const KernelGroupSpec& group, const LaunchVar& launch,
+                         const int64_t* block_ids, TransferDirection direction,
+                         cudaStream_t stream) {
+  const auto launch_with_layout = [&](auto object_ptrs) {
+    if (group.object_layout == MemoryObjectLayout::KV_LAYER_TOKEN) {
+      TORCH_CHECK(group.object_layer_stride_elems == 0,
+                  "object_layer_stride_elems is only valid for "
+                  "LAYER_KV_TOKEN layout");
+      launch_multi_layer_block_transfer<ScalarType>(
+          object_ptrs, launch.num_objects,
+          reinterpret_cast<ScalarType**>(group.paged_buffer_ptrs), block_ids,
+          launch.total_blocks, direction, group.shape_desc,
+          group.lmcache_chunk_size, group.engine_kv_format,
+          launch.skip_prefix_n_blocks, stream, KvLayerTokenOffset{});
+      return;
+    }
 
-  dim3 block(thread_dim_x, thread_dim_y, thread_dim_z);
-  dim3 grid(shape_desc.kv_size, total_blocks, shape_desc.nl);
+    TORCH_CHECK(group.object_layout == MemoryObjectLayout::LAYER_KV_TOKEN,
+                "Unsupported MemoryObjectLayout: ",
+                static_cast<int>(group.object_layout));
+    TORCH_CHECK(group.object_layer_stride_elems >= 0,
+                "object_layer_stride_elems must be non-negative, got ",
+                group.object_layer_stride_elems);
+    const int64_t tight_layer_elems =
+        static_cast<int64_t>(group.shape_desc.kv_size) *
+        group.lmcache_chunk_size * group.shape_desc.nh * group.shape_desc.hs;
+    TORCH_CHECK(group.object_layer_stride_elems == 0 ||
+                    group.object_layer_stride_elems >= tight_layer_elems,
+                "object_layer_stride_elems (", group.object_layer_stride_elems,
+                ") is smaller than the tight layer size (", tight_layer_elems,
+                ")");
+    TORCH_CHECK(
+        group.object_layer_stride_elems == 0 ||
+            (group.object_layer_stride_elems * group.shape_desc.element_size) %
+                    static_cast<int64_t>(sizeof(ScalarType)) ==
+                0,
+        "object layer stride in bytes must be divisible by the kernel's "
+        "transfer unit size");
+    launch_multi_layer_block_transfer<ScalarType>(
+        object_ptrs, launch.num_objects,
+        reinterpret_cast<ScalarType**>(group.paged_buffer_ptrs), block_ids,
+        launch.total_blocks, direction, group.shape_desc,
+        group.lmcache_chunk_size, group.engine_kv_format,
+        launch.skip_prefix_n_blocks, stream,
+        LayerKvTokenOffset{group.object_layer_stride_elems});
+  };
 
-  if (direction == TransferDirection::H2D) {
-    DISPATCH_FORMAT(true);
+  if (group.object_pointer_source == MemoryObjectPointerSource::HOST_VECTOR) {
+    TORCH_CHECK(launch.num_objects <= 4,
+                "HOST_VECTOR supports at most 4 objects, got ",
+                launch.num_objects, "; use DEVICE_ARRAY for larger launches");
+    MemoryObj4<ScalarType> objects{};
+    objects.num_objects = launch.num_objects;
+    for (int i = 0; i < launch.num_objects; ++i) {
+      objects.objects[i] =
+          reinterpret_cast<ScalarType*>(group.lmcache_objects_ptrs[i]);
+    }
+#if defined(USE_ROCM)
+    for (int i = 0; i < launch.num_objects; ++i) {
+      hipPointerAttribute_t attrs;
+      const hipError_t err =
+          hipPointerGetAttributes(&attrs, objects.objects[i]);
+      TORCH_CHECK(err == hipSuccess,
+                  "hipPointerGetAttributes failed: ", hipGetErrorString(err));
+      if (attrs.type == hipMemoryTypeHost) {
+        TORCH_CHECK(attrs.devicePointer != nullptr,
+                    "host LMCache object is not mapped on the device");
+        objects.objects[i] = static_cast<ScalarType*>(attrs.devicePointer);
+      }
+    }
+#endif
+    launch_with_layout(objects);
+    return;
+  }
+
+  TORCH_CHECK(
+      group.object_pointer_source == MemoryObjectPointerSource::DEVICE_ARRAY,
+      "Unsupported MemoryObjectPointerSource: ",
+      static_cast<int>(group.object_pointer_source));
+  TORCH_CHECK(group.lmcache_objects_device_base != 0,
+              "lmcache_objects_device_base must be non-zero for DEVICE_ARRAY");
+  TORCH_CHECK(group.lmcache_objects_device_base % alignof(int64_t) == 0,
+              "lmcache_objects_device_base must be int64-aligned");
+  launch_with_layout(
+      reinterpret_cast<ScalarType* const*>(group.lmcache_objects_device_base));
+}
+
+void launch_kernel_group_dispatch(const KernelGroupSpec& group,
+                                  const LaunchVar& launch,
+                                  const int64_t* block_ids,
+                                  TransferDirection direction,
+                                  cudaStream_t stream) {
+  const int head_bytes = group.shape_desc.hs * group.shape_desc.element_size;
+  TORCH_CHECK(head_bytes % sizeof(uint16_t) == 0, "head_size * element_size (",
+              head_bytes, ") must be divisible by 2 for vectorized access");
+  if (group.engine_kv_format == EngineKVFormat::NL_X_NB_BSV_BSS) {
+    TORCH_CHECK(head_bytes % sizeof(uint32_t) == 0,
+                "NL_X_NB_BSV_BSS row bytes (", head_bytes,
+                ") must be divisible by 4");
+    launch_kernel_group<uint32_t>(group, launch, block_ids, direction, stream);
+  } else if (head_bytes % sizeof(uint4) == 0) {
+    launch_kernel_group<uint4>(group, launch, block_ids, direction, stream);
+  } else if (head_bytes % sizeof(uint32_t) == 0) {
+    launch_kernel_group<uint32_t>(group, launch, block_ids, direction, stream);
   } else {
-    DISPATCH_FORMAT(false);
+    launch_kernel_group<uint16_t>(group, launch, block_ids, direction, stream);
   }
 }
 
@@ -559,7 +722,6 @@ void execute_object_group_transfer(
   // Hoisted: evaluated per section otherwise, even with timing off.
   const cudaStream_t transfer_stream = at::cuda::getCurrentCUDAStream();
   const bool is_h2d = (direction == TransferDirection::H2D);
-  const auto int64_opts = at::TensorOptions().dtype(at::kLong).device(device);
 
   const auto do_staging = [&](const std::vector<StagingCopy>& staging) {
     for (const auto& copy : staging) {
@@ -594,12 +756,15 @@ void execute_object_group_transfer(
                 launch.group_idx < static_cast<int>(kernel_group_specs.size()),
             "LaunchVar.group_idx out of range: ", launch.group_idx);
         const KernelGroupSpec& group = kernel_group_specs[launch.group_idx];
-        TORCH_CHECK(launch.num_objects >= 1 &&
-                        launch.num_objects <=
-                            static_cast<int>(group.lmcache_objects_ptrs.size()),
-                    "LaunchVar.num_objects (", launch.num_objects,
-                    ") exceeds available temp buffers (",
-                    group.lmcache_objects_ptrs.size(), ")");
+        const int64_t object_capacity =
+            group.object_pointer_source ==
+                    MemoryObjectPointerSource::DEVICE_ARRAY
+                ? group.lmcache_objects_device_capacity
+                : static_cast<int64_t>(group.lmcache_objects_ptrs.size());
+        TORCH_CHECK(
+            launch.num_objects >= 1 && launch.num_objects <= object_capacity,
+            "LaunchVar.num_objects (", launch.num_objects,
+            ") exceeds available object pointers (", object_capacity, ")");
         // Bounds-check the block_ids slice before the kernel dereferences it on
         // device: an out-of-range offset/length would otherwise be a silent
         // out-of-bounds device read (CUDA fault or garbage), not a clean error.
@@ -615,37 +780,23 @@ void execute_object_group_transfer(
                     ", ", launch.block_ids_offset + launch.total_blocks,
                     ") exceeds block_ids capacity ", group.block_ids_capacity);
 
-        // Wrap the plan's pre-resolved raw device addresses as non-owning
-        // tensor views so we can reuse the existing
-        // multi_layer_block_kv_transfer entry point without touching any of its
-        // code. The backing storage is owned by the caller's tensors (kept
-        // alive for the duration of this call); these views only carry the
-        // pointer/shape each launch needs. Downstream only reads
-        // paged_buffer_ptrs_tensor.data_ptr() and block_ids.{data_ptr,
-        // size(0)}.
         const uintptr_t block_ids_addr =
             group.block_ids_base +
             static_cast<uintptr_t>(launch.block_ids_offset) * sizeof(int64_t);
-        const at::Tensor paged_buffer_ptrs_tensor = at::from_blob(
-            reinterpret_cast<void*>(group.paged_buffer_ptrs), {1}, int64_opts);
-        const at::Tensor block_ids = at::from_blob(
-            reinterpret_cast<void*>(block_ids_addr),
-            {static_cast<int64_t>(launch.total_blocks)}, int64_opts);
-        std::vector<int64_t> lmcache_objects_ptrs(
-            group.lmcache_objects_ptrs.begin(),
-            group.lmcache_objects_ptrs.begin() + launch.num_objects);
-
-        multi_layer_block_kv_transfer(
-            paged_buffer_ptrs_tensor, std::move(lmcache_objects_ptrs),
-            block_ids, device, direction, group.shape_desc,
-            group.lmcache_chunk_size, group.engine_kv_format,
-            launch.skip_prefix_n_blocks);
+        launch_kernel_group_dispatch(
+            group, launch, reinterpret_cast<const int64_t*>(block_ids_addr),
+            direction, transfer_stream);
       }
     }
     if (!is_h2d) {
       auto section = phase_timer.section(TransferPhase::STAGING, step_bytes,
                                          transfer_stream);
       do_staging(step.staging);
+    }
+    if (step.completion_event != 0) {
+      C10_CUDA_CHECK(
+          cudaEventRecord(reinterpret_cast<cudaEvent_t>(step.completion_event),
+                          transfer_stream));
     }
   }
 

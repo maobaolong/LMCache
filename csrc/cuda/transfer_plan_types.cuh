@@ -27,7 +27,7 @@ struct LaunchVar {
   int group_idx;             // index into the plan's kernel_group_specs
   int64_t block_ids_offset;  // element offset into the group's block_ids_base
   int total_blocks;          // number of block ids for this launch
-  int num_objects;           // chunks in this batch (1-4)
+  int num_objects;           // chunks in this batch
   int skip_prefix_n_blocks;
 };
 
@@ -36,6 +36,9 @@ struct LaunchVar {
 struct BatchStep {
   std::vector<StagingCopy> staging;
   std::vector<LaunchVar> launches;
+  // Optional cudaEvent_t/hipEvent_t recorded after every operation in this
+  // step has been enqueued. Zero means no event.
+  uintptr_t completion_event;
 };
 
 // ---------------------------------------------------------------------------
