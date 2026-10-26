@@ -415,8 +415,8 @@ the ``StorePolicy``.
 
 **EvictionController** (``storage_controllers/eviction_controller.py``):
 Periodically checks L1 memory usage against the watermark threshold.  When
-triggered, evicts objects using the configured policy (``LRU``, ``ARC``,
-``IsolatedLRU``, or ``noop``) until usage drops below the target.
+triggered, evicts objects using the configured policy (``LRU``, ``LFU``,
+``ARC``, ``IsolatedLRU``, or ``noop``) until usage drops below the target.
 ``IsolatedLRU`` evicts per ``cache_salt`` against limits registered through
 the ``/quota`` HTTP endpoints; see :ref:`mp-http-quota-api`.
 

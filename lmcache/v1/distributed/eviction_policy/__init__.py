@@ -13,6 +13,9 @@ from lmcache.v1.distributed.eviction_policy.factory import (
 from lmcache.v1.distributed.eviction_policy.isolated_lru import (
     IsolatedLRUEvictionPolicy,
 )
+from lmcache.v1.distributed.eviction_policy.lfu import (
+    LFUEvictionPolicy,
+)
 from lmcache.v1.distributed.eviction_policy.lru import (
     LRUEvictionPolicy,
 )
@@ -22,6 +25,7 @@ from lmcache.v1.distributed.eviction_policy.noop import (
 
 __all__ = [
     "ARCEvictionPolicy",
+    "LFUEvictionPolicy",
     "LRUEvictionPolicy",
     "NoOpEvictionPolicy",
     "IsolatedLRUEvictionPolicy",

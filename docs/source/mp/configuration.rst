@@ -641,7 +641,10 @@ Source: ``lmcache/v1/distributed/config.py``
    * - ``--eviction-policy``
      - *required*
      - Eviction policy.
-       Choices: ``LRU``, ``ARC``, ``IsolatedLRU``, ``noop``.
+       Choices: ``LRU``, ``LFU``, ``ARC``, ``IsolatedLRU``, ``noop``.
+       ``LFU`` protects frequently reused keys and breaks frequency ties by
+       recency. It is useful for stable hot prefixes that a scan could displace
+       under pure LRU.
        ``ARC`` adaptively balances recently created keys and frequently
        accessed keys. It keeps key-only ghost history for completed policy
        evictions; no KV data is retained in the ghost lists.

@@ -73,7 +73,7 @@ JSON spec passed to `--l2-adapter`:
 
 | Field               | Type    | Default | Description                                                     |
 |---------------------|---------|---------|-----------------------------------------------------------------|
-| `eviction_policy`   | string  | —       | Policy name: `"LRU"`, `"ARC"`, `"IsolatedLRU"`, or `"noop"`. Required. |
+| `eviction_policy`   | string  | —       | Policy name: `"LRU"`, `"LFU"`, `"ARC"`, `"IsolatedLRU"`, or `"noop"`. Required. |
 | `trigger_watermark` | float   | `0.8`   | Usage fraction [0, 1] above which eviction is triggered.        |
 | `eviction_ratio`    | float   | `0.2`   | Fraction of **used** capacity to evict each cycle.              |
 

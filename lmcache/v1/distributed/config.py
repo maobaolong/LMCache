@@ -129,7 +129,7 @@ def _parse_l1_common(
             "eviction must contain policy, watermark and ratio settings only"
         )
     policy = raw.get("eviction_policy", defaults.eviction_policy if defaults else None)
-    if policy not in ("LRU", "ARC", "IsolatedLRU", "noop"):
+    if policy not in ("LRU", "LFU", "ARC", "IsolatedLRU", "noop"):
         raise ValueError("An eviction policy is required for each L1")
     eviction = replace(defaults or EvictionConfig(policy), **raw)
     for name in ("trigger_watermark", "eviction_ratio"):
@@ -508,7 +508,7 @@ class EvictionConfig:
     The configuration for eviction policies (L1 and optionally L2).
     """
 
-    eviction_policy: Literal["LRU", "ARC", "IsolatedLRU", "noop"]
+    eviction_policy: Literal["LRU", "LFU", "ARC", "IsolatedLRU", "noop"]
     """ The eviction policy to use. """
 
     trigger_watermark: float = field(default=0.8)
@@ -973,9 +973,11 @@ def add_storage_manager_args(
     eviction_group.add_argument(
         "--eviction-policy",
         type=str,
-        choices=["LRU", "ARC", "IsolatedLRU", "noop"],
+        choices=["LRU", "LFU", "ARC", "IsolatedLRU", "noop"],
         default=None,
-        help="The eviction policy to use ('LRU', 'ARC', 'IsolatedLRU', or 'noop'). "
+        help="The eviction policy to use ('LRU', 'LFU', 'ARC', 'IsolatedLRU', "
+        "or 'noop'). 'LFU' protects frequently reused keys and breaks ties "
+        "by recency. "
         "'ARC' balances recent and frequently reused keys adaptively. "
         "'IsolatedLRU' maintains one LRU list per cache_salt and requires "
         "quotas keyed by cache_salt to be configured via the HTTP API.",

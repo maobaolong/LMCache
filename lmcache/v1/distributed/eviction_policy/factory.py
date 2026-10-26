@@ -7,6 +7,7 @@ from lmcache.v1.distributed.eviction_policy.arc import ARCEvictionPolicy
 from lmcache.v1.distributed.eviction_policy.isolated_lru import (
     IsolatedLRUEvictionPolicy,
 )
+from lmcache.v1.distributed.eviction_policy.lfu import LFUEvictionPolicy
 from lmcache.v1.distributed.eviction_policy.lru import LRUEvictionPolicy
 from lmcache.v1.distributed.eviction_policy.noop import NoOpEvictionPolicy
 
@@ -23,6 +24,8 @@ def CreateEvictionPolicy(eviction_config: EvictionConfig) -> EvictionPolicy:
     """
     if eviction_config.eviction_policy == "LRU":
         return LRUEvictionPolicy()
+    elif eviction_config.eviction_policy == "LFU":
+        return LFUEvictionPolicy()
     elif eviction_config.eviction_policy == "ARC":
         return ARCEvictionPolicy()
     elif eviction_config.eviction_policy == "IsolatedLRU":
