@@ -6,11 +6,6 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <algorithm>
-#ifdef USE_ROCM
-  #include <hip/hip_fp8.h>
-#else
-  #include <cuda_fp8.h>
-#endif
 
 #ifndef CHECK_CUDA_CALL
   #define CHECK_CUDA_CALL(call)                                             \
