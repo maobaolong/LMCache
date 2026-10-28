@@ -3,6 +3,7 @@
 #include "mp_mem_kernels.cuh"
 
 #include "phase_timing_recorder.cuh"
+#include "streaming_io.cuh"
 
 #include <cstdlib>
 #include <deque>
@@ -163,31 +164,6 @@ __device__ inline size_t calculate_lmcache_local_offset(
   return head_idx * scalars_per_head + token_offset * scalars_per_token;
 }
 
-__device__ inline uint4 ld_cs(const uint4* addr) {
-#if defined(__CUDA_ARCH__) && !defined(LMCACHE_DISABLE_STREAMING_IO)
-  // Cache-streaming load: some compilers (e.g. MetaX's) don't support this
-  // raw PTX asm; define LMCACHE_DISABLE_STREAMING_IO to fall through to the
-  // plain deref below.
-  uint4 val;
-  asm volatile("ld.global.cs.v4.u32 {%0, %1, %2, %3}, [%4];"
-               : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
-               : "l"(addr));
-  return val;
-#else
-  return *addr;
-#endif
-}
-
-__device__ inline void st_cs(uint4* addr, uint4 val) {
-#if defined(__CUDA_ARCH__) && !defined(LMCACHE_DISABLE_STREAMING_IO)
-  asm volatile("st.global.cs.v4.u32 [%0], {%1, %2, %3, %4};"
-               :
-               : "l"(addr), "r"(val.x), "r"(val.y), "r"(val.z), "r"(val.w));
-#else
-  *addr = val;
-#endif
-}
-
 template <typename ScalarType>
 __device__ inline void warp_copy(ScalarType* __restrict__ dst,
                                  const ScalarType* __restrict__ src,
@@ -196,7 +172,7 @@ __device__ inline void warp_copy(ScalarType* __restrict__ dst,
   int stride = blockDim.x;
   if constexpr (std::is_same_v<ScalarType, uint4>) {
     for (size_t i = idx; i < num_elements; i += stride) {
-      st_cs(dst + i, ld_cs(src + i));
+      lmc::store_streaming(dst + i, lmc::load_streaming(src + i));
     }
   } else {
     for (size_t i = idx; i < num_elements; i += stride) {

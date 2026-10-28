@@ -121,6 +121,11 @@ names need package `__init__.py` files to avoid pytest import mismatches.
 
 ### Testing Practices
 
+Build-profile unit tests are independent of the runtime allocator fixtures in
+`tests/conftest.py`. With Python 3.12, PyTorch, setuptools and pytest installed,
+run `python -m pytest --noconftest -q tests/test_build_profiles_*.py` for CPU-only
+build-contract validation; this does not compile or validate accelerator kernels.
+
 - Write tests against the **public interface and docstring contract**, not the implementation. Test as if you don't know the internals — verify that behavior matches what the docstring describes.
 - Avoid accessing private members in tests unless strongly needed.
 - All new features and bug fixes should include corresponding tests.

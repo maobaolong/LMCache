@@ -116,12 +116,7 @@ class CudaProfile(BuildProfile):
         # Third Party
         from torch.utils import cpp_extension
 
-        print("Building CUDA extensions")
-        flag_cxx_abi = (
-            "-D_GLIBCXX_USE_CXX11_ABI=1"
-            if ENABLE_CXX11_ABI
-            else "-D_GLIBCXX_USE_CXX11_ABI=0"
-        )
+        print("Building %s extensions" % self.name)
         cuda_sources = [
             "csrc/cuda/pybind.cpp",
             "csrc/cuda/mem_kernels.cu",
@@ -137,6 +132,38 @@ class CudaProfile(BuildProfile):
             "csrc/cuda/event_recorder.cpp",
             "csrc/cuda/completion_recorder.cpp",
         ]
+        ext_modules = [
+            cpp_extension.CUDAExtension(
+                "lmcache.cuda_ops",
+                sources=cuda_sources,
+                include_dirs=[CSRC_DIR],
+                define_macros=self.cuda_defines(),
+                extra_compile_args={
+                    "cxx": self.default_cxx_flags(),
+                    "nvcc": self.nvcc_flags(),
+                },
+            ),
+        ]
+        cmdclass = {"build_ext": cpp_extension.BuildExtension}
+        return ext_modules, cmdclass
+
+    def cuda_defines(self) -> list[tuple[str, str]]:
+        """Return capability macros for both host and device compilation.
+
+        CUDA-compatible profiles override this to select portable kernel
+        primitives without adding vendor checks to the kernels.
+        """
+        return []
+
+    def nvcc_flags(self) -> list[str]:
+        """Return ABI and compiler flags for NVIDIA nvcc.
+
+        Resolves build parallelism and exports ``MAX_JOBS`` when derived.
+        Compatible toolchains can override this without duplicating sources.
+
+        Raises:
+            ValueError: If ``NVCC_THREADS`` is neither an integer nor ``auto``.
+        """
         max_jobs, nvcc_threads, export_jobs = resolve_build_parallelism()
         if export_jobs:
             # torch's BuildExtension reads MAX_JOBS from os.environ at ninja time.
@@ -145,23 +172,11 @@ class CudaProfile(BuildProfile):
             "CUDA build parallelism: MAX_JOBS=%d NVCC_THREADS=%d"
             % (max_jobs, nvcc_threads)
         )
-        nvcc_flags = [flag_cxx_abi]
+        flags = self.default_cxx_flags()
         # --threads=1 is a no-op; omit it to keep the historical command line.
         if nvcc_threads > 1:
-            nvcc_flags.append(f"--threads={nvcc_threads}")
-        ext_modules = [
-            cpp_extension.CUDAExtension(
-                "lmcache.cuda_ops",
-                sources=cuda_sources,
-                include_dirs=[CSRC_DIR],
-                extra_compile_args={
-                    "cxx": [flag_cxx_abi],
-                    "nvcc": nvcc_flags,
-                },
-            ),
-        ]
-        cmdclass = {"build_ext": cpp_extension.BuildExtension}
-        return ext_modules, cmdclass
+            flags.append(f"--threads={nvcc_threads}")
+        return flags
 
     def extra_cxx_flags_for(self, spec) -> list[str]:
         """All common extensions share the same ABI flag under CUDA."""
