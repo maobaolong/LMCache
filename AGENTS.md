@@ -14,24 +14,72 @@ LMCache is a KV cache management engine for LLM serving that reduces Time To Fir
 
 ## Repository
 
-The default branch is `dev`. Base all new branches and pull requests against `dev`.
+The default branch is `dev`. Base new branches and pull requests against `dev`
+unless the user names another upstream base branch.
 
-Unless the user explicitly instructs otherwise, create and push pull request
-branches to the user's fork, not the upstream repository. Before the first
-push, verify which remote is the user's fork and which is upstream; do not infer
-their roles from remote names such as `origin` or `upstream`. Open the pull
-request with the upstream repository as the base and the fork branch as the
-head.
+The first pull request for an agent-created change must be a staging pull
+request inside the contributor's fork. A request to create a pull request in
+`LMCache/LMCache`, or a request that names an upstream base branch, specifies
+the eventual destination; it does not authorize skipping fork staging. The
+original request to create a pull request is also not approval to promote it
+after fork CI.
+
+The only exception is an explicit direct-upstream override. To request it, the
+user must include the exact token `BYPASS_FORK_STAGING` and explicitly ask to
+create the upstream pull request without fork staging. General phrases such as
+"create an upstream PR", repository URLs, urgency, or a named upstream base
+branch are not overrides. When the exact override is present, confirm it in the
+response, keep the feature branch in the contributor's fork, open an upstream
+draft pull request, and state that fork CI was skipped at the user's request.
+
+Before the first push, verify which remote is the user's fork and which is
+upstream; do not infer their roles from remote names such as `origin` or
+`upstream`.
+
+Before opening an upstream pull request, stage the change in the contributor's
+fork:
+
+1. Resolve the requested upstream base branch (`dev` when none was specified)
+   and its exact SHA. Create a target branch in the fork named
+   `dev-<short-sha>`, using the first eight hexadecimal characters of that SHA,
+   and point it at the exact upstream base commit. If that branch already
+   exists, verify its full SHA matches; never move or force-push it. The target
+   mirrors the requested base exactly, including when testing a change against
+   a temporary upstream feature branch.
+2. Open a draft pull request in the fork from the feature branch to that
+   `dev-<short-sha>` target branch. Do not use the fork's moving `dev` branch or
+   an upstream draft pull request as a CI test run.
+3. Wait for all applicable fork-owned GitHub Actions checks to finish. Fix
+   failures and rerun the fork checks until they pass. If Actions are disabled
+   or the required workflows cannot run in the fork, report that limitation
+   instead of falling back to upstream CI without the contributor's approval.
+4. Report the fork pull request URL, exact head SHA, and check results to the
+   contributor. Only after the contributor explicitly approves promotion may
+   the agent open a draft pull request against the upstream repository, using
+   the fork branch as the head.
+
+Fork checks are a preliminary admission gate, not a replacement for upstream
+required checks. Repository secrets, external CI systems, and upstream-only
+workflows may run only after promotion. Record those gaps accurately in the
+upstream pull request.
+
+GitHub forks do not automatically stay synchronized with upstream tags. Source
+validation workflows that install LMCache must use
+`SETUPTOOLS_SCM_PRETEND_VERSION_FOR_LMCACHE=0.0.0.dev0` so stale fork tags do
+not break version discovery. Do not copy tags into the fork or use this override
+for release artifacts; artifact workflows must supply their intentional build
+version.
 
 All commits in pull requests must include a DCO `Signed-off-by` trailer. Use
 `git commit -s` for new commits; if an existing commit is missing the trailer,
 amend or rebase to add it before pushing.
 
-Agent-created pull requests must be opened as drafts. An agent must not mark a
-pull request ready for review: the submitting human must first review every
-changed line, run the relevant validation, confirm that the PR description and
-test evidence are current, and explicitly decide that the change is ready.
-Pure agent submissions without this human review are not allowed.
+Agent-created pull requests, including fork staging pull requests, must be
+opened as drafts. An agent must not mark a pull request ready for review: the
+submitting human must first review every changed line, run the relevant
+validation, confirm that the PR description and test evidence are current, and
+explicitly decide that the change is ready. Pure agent submissions without this
+human review are not allowed.
 
 Every time AI-assisted code is added to an existing pull request, move the PR
 back to draft before requesting review. Refresh the title and description for
@@ -45,6 +93,9 @@ synchronized with the current head. Before creating or updating that artifact,
 read and follow `.claude/skills/create-pr-explainer/SKILL.md`; it is the
 authoritative workflow for content depth, bilingual presentation, diagrams,
 optional motion, validation, and publication in the PR description.
+The temporary fork staging pull request is exempt from this artifact; generate
+and publish it only after fork CI passes and before creating the upstream pull
+request.
 
 ## Python Environment
 

@@ -19,6 +19,7 @@ on:
   pull_request:
     branches:
       - "dev"
+      - "dev-*"
       - "release-**"
     paths:
       - "lmcache/inprocess/v1/storage_backend/connector/azure_connector.py"
@@ -26,6 +27,9 @@ on:
       - "tests/inprocess/v1/storage_backend/test_azure_connector_azurite.py"
       - ".github/workflows/azure_integration.yml"
   workflow_dispatch:
+
+env:
+  SETUPTOOLS_SCM_PRETEND_VERSION_FOR_LMCACHE: 0.0.0.dev0
 
 defaults:
   run:
