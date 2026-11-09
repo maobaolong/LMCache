@@ -168,7 +168,9 @@ class GrpcNativeMultiprocessServer(GrpcMultiprocessServerBase):
                 parse_grpc_target(bind_url),
                 paths,
                 client_key_metadata=CLIENT_ID_METADATA_KEY,
-                # Affinity handlers expect a client's calls in the order sent.
+                # ordered=True keeps a connection's calls in arrival order.
+                # This is transport-level behaviour; affinity only needs
+                # mutual exclusion per client, not request ordering.
                 ordered=True,
                 **({"metrics": True} if metrics else {}),
             )

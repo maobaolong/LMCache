@@ -115,14 +115,17 @@ def client_affinity_key(
 ) -> int:
     """Return the key that keeps one client's affinity handlers on one worker.
 
+    The key buys mutual exclusion: handlers sharing it never run at the same
+    time. It is not a sequence number and does not promise request ordering.
     Clients send a random ID in their metadata; callers without one fall back
-    to their peer address.
+    to their peer address. Both identify a connection, not a vLLM instance,
+    so reconnecting may change the key.
 
     Args:
         context: The call's servicer context, sync or aio.
 
     Returns:
-        A hash identifying the calling client.
+        A hash identifying the calling client's connection.
     """
     for key, value in context.invocation_metadata() or ():
         if key == CLIENT_ID_METADATA_KEY:

@@ -25,7 +25,12 @@ class HandlerType(Enum):
 
 @dataclass(frozen=True)
 class RequestHandlerOptions:
-    """Scheduling metadata for a decorated request handler."""
+    """Scheduling metadata for a decorated request handler.
+
+    ``requires_client_affinity`` requests mutual exclusion with the calling
+    client's other affinity handlers: they share one worker and never run at
+    the same time. It says nothing about the order in which they run.
+    """
 
     operation: RpcOperation | None
     handler_type: HandlerType
@@ -47,7 +52,24 @@ def request_handler(
     operation: RpcOperation | None = None,
     requires_client_affinity: bool = False,
 ) -> Callable[[F], F]:
-    """Attach scheduling metadata; operation defaults to the method name."""
+    """Attach scheduling metadata to a request handler method.
+
+    Args:
+        handler_type: How the transport should execute the handler.
+        operation: RPC operation name; defaults to the decorated method name.
+        requires_client_affinity: Whether the handler must share one worker
+            with the calling client's other affinity handlers, so they never
+            run at the same time. Use it for handlers that touch per-client,
+            lock-free state such as the temporary GPU buffer. It provides
+            mutual exclusion, not request ordering.
+
+    Returns:
+        A decorator that attaches the metadata to the method.
+
+    Raises:
+        ValueError: If client affinity is requested without a BLOCKING
+            handler type.
+    """
     if requires_client_affinity and handler_type is not HandlerType.BLOCKING:
         raise ValueError("Client affinity requires HandlerType.BLOCKING")
 

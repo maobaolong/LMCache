@@ -137,11 +137,14 @@ def test_router_status_lists_affinity_methods() -> None:
 
 
 @pytest.mark.parametrize("transport", ["zmq", "grpc"])
-def test_affinity_call_runs_in_order_over_real_transport(
+def test_affinity_call_shares_client_worker_over_real_transport(
     transport: Literal["zmq", "grpc"],
 ) -> None:
-    """The call runs on the client's affinity thread, can report progress
-    before it returns, and holds back the client's later affinity requests."""
+    """The call runs on the client's affinity worker and can report progress.
+
+    A later affinity request from that client cannot run until it returns,
+    so the two never overlap. This checks mutual exclusion, not ordering.
+    """
     plugin = _LayerwisePlugin()
     router = _router(plugin)
     config = MPServerConfig(
@@ -169,7 +172,7 @@ def test_affinity_call_runs_in_order_over_real_transport(
         assert plugin.frames.get(timeout=5) == b"layer-1"
         assert not retrieve.query()
 
-        # A later affinity request from the same client waits behind it.
+        # A later affinity request from the same client cannot overlap it.
         queued = client.noop()
         assert not queued.wait(timeout=0.2)
         plugin.gate.set()

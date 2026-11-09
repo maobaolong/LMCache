@@ -43,8 +43,12 @@ class MPServerConfig:
     """Base number of worker threads. Sets default for both GPU and CPU pools."""
 
     max_gpu_workers: int = 1
-    """Worker threads for the GPU affinity pool (STORE/RETRIEVE).
-    Resolved from --max-gpu-workers or --max-workers."""
+    """Workers for handlers that must not run concurrently per client.
+
+    Each affinity worker serializes one client's GPU-bound handlers so they
+    can share per-client GPU state without locks. It does not order requests.
+    Resolved from --max-gpu-workers or --max-workers.
+    """
 
     max_cpu_workers: int = 1
     """Worker threads for the normal (CPU) pool (LOOKUP, END_SESSION, etc.).
@@ -422,8 +426,10 @@ def add_mp_server_args(
         "--max-gpu-workers",
         type=int,
         default=None,
-        help="Worker threads for the GPU affinity pool (STORE/RETRIEVE). "
-        "Defaults to --max-workers if not specified.",
+        help="Worker threads for client-affinity handlers. One worker per "
+        "client keeps those handlers from running at the same time, so they "
+        "can share per-client GPU state without locks. It does not order "
+        "requests. Defaults to --max-workers if not specified.",
     )
     mp_group.add_argument(
         "--max-cpu-workers",

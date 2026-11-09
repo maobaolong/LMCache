@@ -101,9 +101,10 @@ Source: ``lmcache/v1/multiprocess/config.py``
        per-pool with ``--max-gpu-workers`` and ``--max-cpu-workers``.
    * - ``--max-gpu-workers``
      - (inherits ``--max-workers``)
-     - Worker threads for the GPU affinity pool (STORE/RETRIEVE).
-       Requests from the same vLLM instance are always dispatched to the
-       same thread, eliminating GPU transfer lock contention.
+     - Worker threads for client-affinity handlers (GPU-bound, such as
+       STORE/RETRIEVE). A client's affinity handlers share one worker and
+       never run at the same time, so they can reuse per-client GPU state
+       without locks. This is mutual exclusion, not request ordering.
    * - ``--max-cpu-workers``
      - (inherits ``--max-workers``)
      - Worker threads for the normal CPU pool (LOOKUP, etc.).

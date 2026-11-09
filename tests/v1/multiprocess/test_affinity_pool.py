@@ -160,7 +160,11 @@ def test_no_overflow_warning_within_worker_count():
 
 
 def test_same_key_serialization():
-    """Tasks with the same affinity key execute sequentially."""
+    """Tasks with the same affinity key never run at the same time.
+
+    The FIFO result below is a property of ``queue.Queue``, not a contract;
+    the assertion is kept to detect a regression in the current dispatch.
+    """
     pool = AffinityThreadPool(max_workers=2)
     order: list[int] = []
     lock = threading.Lock()
@@ -168,7 +172,7 @@ def test_same_key_serialization():
     def append_value(val: int) -> None:
         with lock:
             order.append(val)
-        # Small sleep to ensure ordering matters
+        # Small sleep to expose overlapping execution in the recorded order
         time.sleep(0.01)
 
     futures = [pool.submit(append_value, i, affinity_key=42) for i in range(5)]

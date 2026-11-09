@@ -1,13 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Thread pool with affinity routing.
+Thread pool that keeps one client's affinity handlers off other threads.
 
-Tasks submitted with the same ``affinity_key`` always execute on the same
-worker thread.  Within each worker, tasks execute sequentially in FIFO order.
+Tasks sharing an ``affinity_key`` are bound to one worker, so they never run
+at the same time. That mutual exclusion is the point: GPU-bound handlers
+(STORE / RETRIEVE) reuse a per-client temporary GPU buffer, and serializing
+them on one thread removes the need for locks on that buffer (and for the
+deadlock-prone CUDA driver lock such locks had to coordinate with).
 
-This is used for GPU-bound request handlers (STORE / RETRIEVE) so that all
-operations for a given vLLM instance land on one thread, eliminating the need
-for per-instance locks on the shared temporary GPU buffer.
+The ``affinity_key`` identifies a connection, not a vLLM instance: ZMQ uses
+the client identity and gRPC uses the client-id metadata or peer address.
+Reconnecting may therefore change the key. When distinct keys outnumber
+workers, some share a worker and their tasks are still serialized.
+
+Each worker drains a ``queue.Queue`` in FIFO order, but that ordering is an
+implementation detail, not a contract. Affinity provides mutual exclusion,
+not per-client request ordering; cross-request causality comes from the
+client's request/response round trips and from state keyed by request id.
 """
 
 # Standard
@@ -25,7 +34,12 @@ _SHUTDOWN = object()
 
 
 class AffinityThreadPool:
-    """Thread pool that routes tasks to workers by affinity key.
+    """Route tasks by key so each client's handlers never run concurrently.
+
+    Binding a key to one worker is a mutual-exclusion mechanism, not a
+    request-ordering guarantee. The FIFO behaviour of a worker's queue is an
+    implementation detail of ``queue.Queue``; callers must not rely on it for
+    correctness. See the module docstring for why the exclusion is needed.
 
     Not thread-safe: the request transport must serialize calls to ``submit()``.
     ZMQ submits from its main loop, while gRPC protects submission with a lock.

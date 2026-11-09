@@ -34,7 +34,9 @@ class HandlerSpec:
         operation: RPC operation served by the handler.
         handler: Callable that processes the decoded request payloads.
         handler_type: Whether to execute inline or on a worker.
-        requires_client_affinity: Whether to use the client-affinity pool.
+        requires_client_affinity: Whether the handler must share the calling
+            client's affinity worker, so those handlers never run at the same
+            time. This is mutual exclusion, not request ordering.
     """
 
     operation: RpcOperation

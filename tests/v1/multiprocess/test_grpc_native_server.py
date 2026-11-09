@@ -147,8 +147,13 @@ def blocked() -> Iterator[threading.Event]:
     release.set()
 
 
-def test_affinity_calls_run_in_the_order_sent() -> None:
-    """A client's pipelined affinity calls reach the handler in send order."""
+def test_native_front_keeps_connection_calls_in_arrival_order() -> None:
+    """The native front hands one connection's calls to handlers in send order.
+
+    This checks the transport's ``ordered=True`` behaviour, not a client
+    affinity contract. Affinity only needs mutual exclusion per client; the
+    assertion below guards front dispatch, not handler correctness.
+    """
     seen: list[bytes] = []
 
     class Module:

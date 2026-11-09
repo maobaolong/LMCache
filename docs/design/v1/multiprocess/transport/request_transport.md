@@ -47,6 +47,38 @@ answers with any other error status, the client raises `MPRequestError` with
 the status code and message instead of grpcio's own error. A ZMQ server answers
 a failed handler with an error frame, and the client raises `MPRequestError` too.
 
+## Client affinity
+
+`@request_handler(..., requires_client_affinity=True)` marks handlers that
+must not run at the same time for one client. The transport routes all such
+handlers from a client to one affinity worker, so they execute one after
+another. That mutual exclusion is the whole point: GPU-bound handlers reuse a
+per-client temporary GPU buffer, and serializing them removes the need for
+locks on that buffer (and for the deadlock-prone CUDA driver lock those locks
+had to coordinate with).
+
+What affinity does **not** provide is request ordering. Each worker drains a
+`queue.Queue`, so tasks happen to run in FIFO order, but that is an
+implementation detail and handlers must not depend on it. Where two requests
+have a causal relationship -- for example `prepare_store` before
+`commit_store`, or a lookup followed by the retrieve that consumes its result
+-- the ordering comes from the client waiting for the first RPC's response
+before sending the next, and from server-side state keyed by request id and
+protected by its own locks. The affinity pool is not involved in that
+ordering.
+
+The affinity key identifies a connection, not a vLLM instance. ZMQ uses the
+client identity; gRPC uses the client-id metadata, falling back to the peer
+address. A reconnect can change the key, and with more distinct keys than
+`max_gpu_workers` several keys share one worker. Tasks are still serialized in
+that case, but clients no longer get dedicated workers. Handlers therefore
+must not assume a stable worker over a client's lifetime.
+
+Practical consequence: do not add per-client sequencing or "ordered RPC"
+machinery to fix affinity handlers. A handler that needs a particular
+execution order should get it from an explicit request/response dependency,
+not from the transport.
+
 ## Transport implementations
 
 `RequestClientFactory` selects an implementation by endpoint scheme:
@@ -91,10 +123,11 @@ handlers take threads.
 
 Handler types mean the same in both modes: `SERIALIZED` handlers run one at a
 time, at most `max_cpu_workers` normal `BLOCKING` handlers run at once, and
-affinity handlers stay on the worker bound to their client. Each
-server-streaming call is read on its own thread, so idle subscriptions never
-occupy a handler worker. In `aio` mode, the `grpc_server_workers` threads only
-run out-of-tree services that register plain functions instead of coroutines.
+affinity handlers are serialized on the worker bound to their client (see
+[Client affinity](#client-affinity)). Each server-streaming call is read on
+its own thread, so idle subscriptions never occupy a handler worker. In `aio`
+mode, the `grpc_server_workers` threads only run out-of-tree services that
+register plain functions instead of coroutines.
 
 `native` exists because the server is bound by one GIL. With grpcio, every
 call also runs grpcio's own Python layer (call state, metadata, status, a

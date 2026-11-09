@@ -118,13 +118,17 @@ def server_module_handler(
     level schema, encoding, and compatibility policy.
 
     A handler with ``requires_client_affinity=True`` is served by
-    ``server_module_affinity_call``. It runs on the calling client's affinity
-    thread, in order with that client's store and retrieve requests.
+    ``server_module_affinity_call``. It shares the calling client's affinity
+    worker with that client's store and retrieve requests, so it never runs
+    concurrently with them. Use it for handlers that touch per-client,
+    lock-free state such as the temporary GPU buffer. Affinity gives mutual
+    exclusion, not request ordering.
 
     Args:
         method: Namespaced method name, such as ``"my_package.echo"``.
         requires_client_affinity: Serve the handler through
-            ``server_module_affinity_call``.
+            ``server_module_affinity_call`` so it shares the client's
+            affinity worker instead of a normal pool thread.
 
     Returns:
         A decorator that attaches immutable handler metadata to a method.
@@ -207,10 +211,11 @@ class ExtServerModuleRouter:
         self,
         request: ServerModuleCallRequest,
     ) -> ServerModuleCallResponse:
-        """Dispatch one request on the calling client's affinity thread.
+        """Dispatch one request on the calling client's affinity worker.
 
-        The transport queues it in order with the client's other affinity
-        requests, such as store and retrieve.
+        It shares that worker with the client's other affinity requests, such
+        as store and retrieve, so it never runs concurrently with them. The
+        queue's FIFO behaviour is an implementation detail, not a contract.
 
         Args:
             request: Opaque extension request envelope.

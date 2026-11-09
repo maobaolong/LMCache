@@ -292,7 +292,9 @@ name; see :doc:`request_transport` for endpoint selection and wire details.
 - **SERIALIZED** -- Run one at a time by the request transport (the ZMQ main
   loop or the gRPC serialized-handler lock) for fast, non-blocking work.
 - **BLOCKING** -- Dispatched to a normal or client-affinity thread pool (may
-  involve GPU copies or I/O).
+  involve GPU copies or I/O). Client-affinity handlers share one worker per
+  connection, so they never run at the same time; this is mutual exclusion,
+  not request ordering.
 
 Config System
 -------------

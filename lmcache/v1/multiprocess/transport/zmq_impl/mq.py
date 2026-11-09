@@ -786,7 +786,9 @@ class MessageQueueServer(RequestServer):
             handler_entry (BlockingRequestHandler[Any]): The handler entry.
             payloads (list[bytes]): The payloads of the request.
             prefix_frames (list[bytes]): The prefix frames to send back.
-                prefix_frames[0] is the zmq identity used as affinity key.
+                prefix_frames[0] is the ZMQ connection identity used as the
+                affinity key. It identifies a connection, not a vLLM
+                instance, and may change when the client reconnects.
         """
         affinity_key = hash(prefix_frames[0])
         future = handler_entry(payloads, affinity_key=affinity_key)
@@ -1128,9 +1130,10 @@ class MessageQueueServer(RequestServer):
         """Assign an AffinityThreadPool to specific request types.
 
         Use this for GPU-bound blocking handlers (e.g. STORE, RETRIEVE).
-        Requests from the same zmq client identity are always dispatched
-        to the same worker thread, eliminating the need for per-instance
-        GPU transfer locks.
+        Requests sharing a ZMQ connection identity are bound to one worker,
+        so they never run at the same time. That mutual exclusion is what
+        removes the need for locks on the shared temporary GPU buffer; it
+        does not promise request ordering.
 
         Must be called after the handlers are registered (via add_handler /
         add_blocking_handler) and before start().
