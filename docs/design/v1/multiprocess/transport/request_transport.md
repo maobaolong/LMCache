@@ -49,35 +49,36 @@ a failed handler with an error frame, and the client raises `MPRequestError` too
 
 ## Client affinity
 
-`@request_handler(..., requires_client_affinity=True)` marks handlers that
-must not run at the same time for one client. The transport routes all such
-handlers from a client to one affinity worker, so they execute one after
-another. That mutual exclusion is the whole point: GPU-bound handlers reuse a
-per-client temporary GPU buffer, and serializing them removes the need for
-locks on that buffer (and for the deadlock-prone CUDA driver lock those locks
-had to coordinate with).
+`@request_handler(..., requires_client_affinity=True)` binds one client's
+affinity handlers to a single worker. The motive is mutual exclusion, not
+scheduling: GPU-bound handlers reuse shared, per-slot temporary GPU buffers,
+so running them one at a time removes the need for the per-device transfer
+lock (which risked deadlocking with the implicit CUDA driver lock). Handlers
+sharing the key never overlap -- that is the whole contract.
 
-What affinity does **not** provide is request ordering. Each worker drains a
-`queue.Queue`, so tasks happen to run in FIFO order, but that is an
-implementation detail and handlers must not depend on it. Where two requests
-have a causal relationship -- for example `prepare_store` before
-`commit_store`, or a lookup followed by the retrieve that consumes its result
--- the ordering comes from the client waiting for the first RPC's response
-before sending the next, and from server-side state keyed by request id and
-protected by its own locks. The affinity pool is not involved in that
-ordering.
+Ordering is neither guaranteed nor needed. When two requests are causally
+related -- `prepare_store` before `commit_store`, or a lookup followed by the
+retrieve that consumes its result -- the client waits for the first response
+before sending the next, and the server finds that state by request id in
+lock-protected maps. Neither relies on execution order. A worker happens to
+drain a `queue.Queue` FIFO, but that is an implementation detail.
 
-The affinity key identifies a connection, not a vLLM instance. ZMQ uses the
-client identity; gRPC uses the client-id metadata, falling back to the peer
-address. A reconnect can change the key, and with more distinct keys than
-`max_gpu_workers` several keys share one worker. Tasks are still serialized in
-that case, but clients no longer get dedicated workers. Handlers therefore
-must not assume a stable worker over a client's lifetime.
+Nor is the client's send order preserved end to end, and that is expected:
 
-Practical consequence: do not add per-client sequencing or "ordered RPC"
-machinery to fix affinity handlers. A handler that needs a particular
+- The sync gRPC server runs unary calls on `grpc_server_workers` threads.
+  The submit lock serializes submission, not arrival, so concurrent calls
+  from one client can be enqueued in thread-scheduling order.
+- ZMQ is FIFO only within one live DEALER/ROUTER connection. The ROUTER
+  fair-queues across clients; a reconnect replaces the connection, leaving
+  no order across that boundary, and the key is the ZMQ identity of that
+  connection, not a vLLM instance, so later requests may get another worker.
+- Responses are matched by `request_uid` and returned as handlers finish,
+  so replies can arrive out of order too.
+
+Once enqueued, a client's tasks still run one at a time, in enqueue order --
+which need not be the order the client sent them. A handler needing a specific
 execution order should get it from an explicit request/response dependency,
-not from the transport.
+not from "ordered RPC" machinery.
 
 ## Transport implementations
 
