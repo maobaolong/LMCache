@@ -190,7 +190,8 @@ Alternatively, use the provided example script (accepts the
     python3 -m lmcache.lmcache_frontend.app \
         --port 8000 \
         --host 0.0.0.0 \
-        --node-supplier-url http://localhost:5000/lmcache_infos
+        --node-supplier-url http://localhost:5000/lmcache_infos \
+        --backend-key-allowlist 127.0.0.1:8085
 
 Open ``http://localhost:8000`` in your browser. The dashboard fetches
 the node list from the discovery service and reverse-proxies to each
@@ -207,13 +208,13 @@ remains public for Prometheus scraping; other data and management endpoints
 require a valid key. API callers can use ``Authorization: Bearer <key>`` or
 ``X-LMCache-API-Key: <key>`` through the shared HTTP authentication adapter.
 
-The backend key is independent: the dashboard replaces the browser's
-``Authorization`` value with this key when it proxies to an authenticated
-LMCache server. Both caller credential headers are removed when frontend
-authentication or a backend key is configured. Prefer distinct high-entropy keys
-for the dashboard and the
-server. API keys do not encrypt traffic; terminate TLS at a trusted reverse
-proxy when traffic crosses an untrusted network.
+The backend key is independent: for operator-authorized targets, the dashboard
+replaces the browser's ``Authorization`` value with this key when it proxies to
+an authenticated LMCache server. Both caller credential headers are removed
+when frontend authentication or a backend key is configured. Prefer distinct
+high-entropy keys for the dashboard and the server. API keys do not encrypt
+traffic; terminate TLS at a trusted reverse proxy when traffic crosses an
+untrusted network.
 
 When a backend key is configured, a frontend API key is required as well. The
 frontend exits with an error if the backend key is set without frontend
@@ -230,7 +231,11 @@ connects to paths declared by the operator through ``--nodes``, ``--config``, or
 path only when it matches an allowlist entry; otherwise they answer ``403`` and
 metrics reports an error. Paths are compared after ``realpath``, so ``..`` and
 symlinks cannot escape a declared directory. TCP nodes, from every source, keep
-using the registered host and port allowlist.
+using the registered host and port allowlist for proxy access. Backend key
+forwarding is narrower: TCP nodes declared through ``--nodes`` or ``--config``
+are trusted automatically, while supplier-discovered or runtime-added targets
+receive the key only when their exact ``host:port`` appears in
+``--backend-key-allowlist``.
 
 .. note::
    The dashboard auto-refreshes the node list from the supplier URL
@@ -280,12 +285,14 @@ CLI Reference
      - *(built-in)*
      - Path to a JSON config file listing proxy nodes.  Used when
        ``--node-supplier-url`` is not set. Unix socket paths in this file are
-       added to the startup UDS allowlist.
+       added to the startup UDS allowlist; TCP targets are authorized to
+       receive the backend key.
    * - ``--nodes``
      - *(none)*
      - Inline JSON array of node dicts, e.g.
        ``'[{"name":"n1","host":"127.0.0.1","port":"8085"}]'``.
-       Unix socket paths in this value are added to the startup UDS allowlist.
+       Unix socket paths in this value are added to the startup UDS allowlist;
+       TCP targets are authorized to receive the backend key.
    * - ``--uds-allowlist``
      - *(none)*
      - Socket path or directory the dashboard may reach. Repeatable and
@@ -316,6 +323,12 @@ CLI Reference
      - Read the Bearer key sent to backend LMCache HTTP servers. Environment
        alternatives are ``LMCACHE_FRONTEND_BACKEND_API_KEY_FILE`` and
        ``LMCACHE_FRONTEND_BACKEND_API_KEY``. Configure exactly one source.
+   * - ``--backend-key-allowlist``
+     - *(none)*
+     - Exact ``host:port`` allowed to receive the backend API key. Repeatable
+       and comma-separated. Needed for supplier-discovered and runtime-added
+       TCP targets; targets in ``--nodes`` and ``--config`` are added
+       automatically.
 
 Plugin Config Keys
 ------------------

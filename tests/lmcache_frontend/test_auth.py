@@ -69,7 +69,11 @@ def test_metrics_remain_public_with_authenticated_backend(
     frontend.target_nodes.append(
         {"nodes": [{"name": "node", "host": "127.0.0.1", "port": "8080"}]}
     )
-    app = frontend.create_app(APIKeyVerifier(["secret"]), "Bearer backend-key")
+    app = frontend.create_app(
+        APIKeyVerifier(["secret"]),
+        "Bearer backend-key",
+        allowed_backend_key_targets={"127.0.0.1:8080"},
+    )
     with TestClient(app) as client:
         response = client.get("/metrics", headers=headers)
 
@@ -131,6 +135,7 @@ def test_proxy_does_not_forward_frontend_key(
     app = frontend.create_app(
         APIKeyVerifier(frontend_keys),
         backend_authorization,
+        allowed_backend_key_targets={"127.0.0.1:8080"},
     )
 
     with TestClient(app) as client:

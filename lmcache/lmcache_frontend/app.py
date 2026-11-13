@@ -173,6 +173,22 @@ def _configured_socket_paths(nodes: list[dict]) -> frozenset[str]:
     return frozenset(socket_paths)
 
 
+def _configured_tcp_targets(nodes: list[dict]) -> frozenset[str]:
+    """Return TCP ``host:port`` targets from operator node configuration."""
+    targets: set[str] = set()
+    pending = list(nodes)
+    while pending:
+        node = pending.pop()
+        host = str(node.get("host", ""))
+        port = str(node.get("port", ""))
+        if host and port and "/" not in port:
+            targets.add(f"{host}:{port}")
+        children = node.get("nodes", [])
+        if isinstance(children, list):
+            pending.extend(child for child in children if isinstance(child, dict))
+    return frozenset(targets)
+
+
 def _socket_allowlist(
     declared: Collection[str], extra: Sequence[str] | None
 ) -> frozenset[str]:
@@ -183,6 +199,30 @@ def _socket_allowlist(
         for part in value.split(",")
         if part.strip()
     }
+
+
+def _backend_key_allowlist(
+    declared: Collection[str], extra: Sequence[str] | None
+) -> frozenset[str]:
+    """Return startup TCP targets plus explicit backend-key allowlist entries."""
+    return frozenset(declared) | {
+        part.strip()
+        for value in extra or ()
+        for part in value.split(",")
+        if part.strip()
+    }
+
+
+def _backend_authorization_for_target(
+    host: str,
+    port: str,
+    authorization_header: str | None,
+    allowed_targets: Collection[str],
+) -> str | None:
+    """Return the backend credential only for an operator-authorized target."""
+    if f"{host}:{port}" not in allowed_targets:
+        return None
+    return authorization_header
 
 
 def _socket_allowed(socket_path: str, allowed: Collection[str]) -> bool:
@@ -209,7 +249,9 @@ args: argparse.Namespace | None = None
 
 
 async def fetch_child_nodes_from_proxy(
-    proxy_node: dict, authorization_header: str | None = None
+    proxy_node: dict,
+    authorization_header: str | None = None,
+    allowed_backend_key_targets: Collection[str] = (),
 ) -> list[dict]:
     """Fetch child nodes from a single proxy node.
 
@@ -217,16 +259,21 @@ async def fetch_child_nodes_from_proxy(
         proxy_node: Proxy dict with ``name``/``host``/``port`` keys.
             ``/api/nodes`` of the proxy is queried.
         authorization_header: Optional Bearer value for the proxy request.
+        allowed_backend_key_targets: TCP targets authorized to receive the value.
 
     Returns:
         A list of leaf node dicts discovered from the proxy.  An
         empty list is returned when the request fails.
     """
     try:
-        url = f"http://{proxy_node['host']}:{proxy_node['port']}/api/nodes"
+        host, port = str(proxy_node["host"]), str(proxy_node["port"])
+        url = f"http://{host}:{port}/api/nodes"
+        target_authorization = _backend_authorization_for_target(
+            host, port, authorization_header, allowed_backend_key_targets
+        )
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
-                url, headers=_authorization_headers(authorization_header)
+                url, headers=_authorization_headers(target_authorization)
             )
             response.raise_for_status()
             return_nodes = []
@@ -260,6 +307,7 @@ async def fetch_child_nodes_from_proxy(
 async def fetch_all_child_nodes_concurrently(
     proxy_nodes: list[dict],
     authorization_header: str | None = None,
+    allowed_backend_key_targets: Collection[str] = (),
 ) -> list[dict]:
     """Fetch child nodes from multiple proxy nodes concurrently.
 
@@ -267,12 +315,15 @@ async def fetch_all_child_nodes_concurrently(
         proxy_nodes: Proxy dicts to query.  Each dict is mutated in
             place with a new ``nodes`` field.
         authorization_header: Optional Bearer value for proxy requests.
+        allowed_backend_key_targets: TCP targets authorized to receive the value.
 
     Returns:
         The same ``proxy_nodes`` list with ``nodes`` populated.
     """
     tasks = [
-        fetch_child_nodes_from_proxy(proxy, authorization_header)
+        fetch_child_nodes_from_proxy(
+            proxy, authorization_header, allowed_backend_key_targets
+        )
         for proxy in proxy_nodes
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -293,6 +344,7 @@ async def _fetch_child_nodes_from_api_nodes(
     port: str,
     proxy_name: str,
     authorization_header: str | None = None,
+    allowed_backend_key_targets: Collection[str] = (),
 ) -> list[dict]:
     """Fetch child nodes from one multiprocess server.
 
@@ -301,6 +353,7 @@ async def _fetch_child_nodes_from_api_nodes(
         port: Server HTTP port.
         proxy_name: Name recorded on returned child nodes.
         authorization_header: Optional Bearer value for the server request.
+        allowed_backend_key_targets: TCP targets authorized to receive the value.
 
     Returns:
         A non-empty list of child-node dictionaries when the target is a
@@ -308,10 +361,13 @@ async def _fetch_child_nodes_from_api_nodes(
         list for in-process nodes, connection errors, or no reported children.
     """
     try:
+        target_authorization = _backend_authorization_for_target(
+            host, port, authorization_header, allowed_backend_key_targets
+        )
         url = "http://%s:%s/api/nodes" % (host, port)
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
-                url, headers=_authorization_headers(authorization_header)
+                url, headers=_authorization_headers(target_authorization)
             )
             response.raise_for_status()
         nodes_data = response.json().get("nodes", [])
@@ -330,7 +386,9 @@ async def _fetch_child_nodes_from_api_nodes(
 
 
 async def fetch_nodes_from_supplier(
-    url: str, authorization_header: str | None = None
+    url: str,
+    authorization_header: str | None = None,
+    allowed_backend_key_targets: Collection[str] = (),
 ) -> list[dict]:
     """Fetch node information from node supplier.
 
@@ -343,6 +401,7 @@ async def fetch_nodes_from_supplier(
     Args:
         url: Node-supplier endpoint returning process information.
         authorization_header: Optional Bearer value for discovered nodes.
+        allowed_backend_key_targets: TCP targets authorized to receive the value.
 
     Returns:
         Proxy nodes populated with their discovered children.
@@ -378,7 +437,11 @@ async def fetch_nodes_from_supplier(
             ]
             child_tasks = [
                 _fetch_child_nodes_from_api_nodes(
-                    p["host"], p["port"], p["name"], authorization_header
+                    p["host"],
+                    p["port"],
+                    p["name"],
+                    authorization_header,
+                    allowed_backend_key_targets,
                 )
                 for p in proxy_list
             ]
@@ -530,7 +593,9 @@ async def refresh_proxy_nodes(request: Request, proxy_name: str) -> dict:
 
     try:
         child_nodes = await fetch_child_nodes_from_proxy(
-            proxy, request.app.state.backend_authorization_header
+            proxy,
+            request.app.state.backend_authorization_header,
+            request.app.state.allowed_backend_key_targets,
         )
         proxy["nodes"] = child_nodes
         return {"status": "success", "nodes": child_nodes}
@@ -730,7 +795,8 @@ async def proxy_request(
     from being used as an open relay (SSRF); socket paths must be explicitly
     configured at startup. When frontend authentication or a backend credential
     is configured, both supported caller credential headers are removed and an
-    independently configured backend credential is added instead.
+    independently configured backend credential is added only for an
+    operator-authorized target.
     """
     target_port_or_socket = unquote(str(target_port_or_socket))
     # Check if target_port_or_socket is a socket path (contains '/')
@@ -748,6 +814,7 @@ async def proxy_request(
 
         # Create UDS transport
         transport = httpx.AsyncHTTPTransport(uds=socket_path)
+        should_send_backend_authorization = True
     else:
         port = target_port_or_socket
         # SSRF guard: resolve against the registry and reuse the
@@ -762,6 +829,9 @@ async def proxy_request(
         safe_host, safe_port = resolved
         target_url = f"http://{safe_host}:{safe_port}/{path}"
         transport = None  # Use default transport
+        should_send_backend_authorization = (
+            f"{safe_host}:{safe_port}" in request.app.state.allowed_backend_key_targets
+        )
 
     backend_authorization_header = request.app.state.backend_authorization_header
     headers = {}
@@ -786,7 +856,7 @@ async def proxy_request(
             continue
         headers[key] = value
 
-    if backend_authorization_header is not None:
+    if backend_authorization_header is not None and should_send_backend_authorization:
         headers["Authorization"] = backend_authorization_header
 
     body = await request.body()
@@ -890,12 +960,14 @@ async def stop_heartbeat_api():
 async def load_nodes_from_supplier(
     node_supplier_url: str | None = None,
     backend_authorization_header: str | None = None,
+    allowed_backend_key_targets: Collection[str] = (),
 ) -> bool:
     """Load node information from node supplier.
 
     Args:
         node_supplier_url: Discovery service URL, e.g. ``/lmcache_infos``.
         backend_authorization_header: Optional Bearer value for discovered nodes.
+        allowed_backend_key_targets: TCP targets authorized to receive the value.
 
     Returns:
         ``True`` when a non-empty node list was retrieved and stored.
@@ -905,7 +977,9 @@ async def load_nodes_from_supplier(
 
     print(f"Fetching nodes from supplier: {node_supplier_url}")
     nodes = await fetch_nodes_from_supplier(
-        node_supplier_url, backend_authorization_header
+        node_supplier_url,
+        backend_authorization_header,
+        allowed_backend_key_targets,
     )
     if nodes:
         _node_registry.replace(nodes)
@@ -924,6 +998,7 @@ async def load_nodes_from_supplier(
 async def initialize_nodes(
     node_supplier_url: str | None = None,
     backend_authorization_header: str | None = None,
+    allowed_backend_key_targets: Collection[str] = (),
 ) -> frozenset[str]:
     """Initialize node configuration from CLI args or supplier URL.
 
@@ -932,6 +1007,7 @@ async def initialize_nodes(
             nodes are loaded via :func:`load_nodes_from_supplier`.
             Otherwise falls back to ``args.nodes`` / ``args.config``.
         backend_authorization_header: Optional Bearer value for discovered nodes.
+        allowed_backend_key_targets: TCP targets authorized to receive the value.
 
     Returns:
         UDS paths trusted through startup ``--nodes`` or ``--config``.
@@ -942,7 +1018,11 @@ async def initialize_nodes(
         raise ValueError("args is not initialized")
 
     if node_supplier_url:
-        await load_nodes_from_supplier(node_supplier_url, backend_authorization_header)
+        await load_nodes_from_supplier(
+            node_supplier_url,
+            backend_authorization_header,
+            allowed_backend_key_targets,
+        )
         return frozenset()
     elif args.nodes:
         try:
@@ -978,7 +1058,9 @@ _supplier_refresh_lock = asyncio.Lock()
 
 
 async def _maybe_refresh_from_supplier(
-    node_supplier_url: str, backend_authorization_header: str | None
+    node_supplier_url: str,
+    backend_authorization_header: str | None,
+    allowed_backend_key_targets: Collection[str],
 ) -> None:
     """Refresh the node registry from supplier, at most once per interval.
 
@@ -996,7 +1078,11 @@ async def _maybe_refresh_from_supplier(
         now = time.monotonic()
         if now - _supplier_last_refresh < _SUPPLIER_REFRESH_INTERVAL_SEC:
             return
-        await initialize_nodes(node_supplier_url, backend_authorization_header)
+        await initialize_nodes(
+            node_supplier_url,
+            backend_authorization_header,
+            allowed_backend_key_targets,
+        )
         _supplier_last_refresh = time.monotonic()
 
 
@@ -1013,6 +1099,7 @@ async def serve_frontend(request: Request) -> FileResponse:
         await _maybe_refresh_from_supplier(
             node_supplier_url,
             request.app.state.backend_authorization_header,
+            request.app.state.allowed_backend_key_targets,
         )
 
     try:
@@ -1029,6 +1116,7 @@ async def _fetch_node_metrics(
     node: dict,
     authorization_header: str | None,
     allowed_socket_paths: Collection[str],
+    allowed_backend_key_targets: Collection[str],
 ) -> str:
     """Fetch Prometheus metrics from one node.
 
@@ -1036,6 +1124,7 @@ async def _fetch_node_metrics(
         node: Node dictionary containing name, host, and port.
         authorization_header: Optional Bearer value for the node request.
         allowed_socket_paths: Operator-configured UDS paths eligible for access.
+        allowed_backend_key_targets: TCP targets authorized to receive the value.
 
     Returns:
         Metrics text, or a Prometheus comment describing the failure.
@@ -1062,10 +1151,14 @@ async def _fetch_node_metrics(
                 return response.text
         else:
             # Build URL for regular port
-            url = f"http://{node['host']}:{node['port']}/metrics"
+            host, port = str(node["host"]), str(node["port"])
+            target_authorization = _backend_authorization_for_target(
+                host, port, authorization_header, allowed_backend_key_targets
+            )
+            url = f"http://{host}:{port}/metrics"
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(
-                    url, headers=_authorization_headers(authorization_header)
+                    url, headers=_authorization_headers(target_authorization)
                 )
                 response.raise_for_status()
                 return response.text
@@ -1109,6 +1202,7 @@ async def aggregated_metrics(request: Request) -> PlainTextResponse:
                 node,
                 request.app.state.backend_authorization_header,
                 request.app.state.allowed_socket_paths,
+                request.app.state.allowed_backend_key_targets,
             )
             for node in nodes
         ]
@@ -1131,6 +1225,7 @@ def create_app(
     http_authentication: APIKeyVerifier | None = None,
     backend_authorization_header: str | None = None,
     allowed_socket_paths: Collection[str] = (),
+    allowed_backend_key_targets: Collection[str] = (),
 ) -> FastAPI:
     """Create and configure the frontend FastAPI application.
 
@@ -1138,6 +1233,7 @@ def create_app(
         http_authentication: API keys accepted from frontend callers.
         backend_authorization_header: Bearer value sent to backend HTTP servers.
         allowed_socket_paths: Operator-configured UDS paths eligible for access.
+        allowed_backend_key_targets: TCP targets eligible to receive the backend key.
 
     Returns:
         Configured frontend application.
@@ -1151,6 +1247,7 @@ def create_app(
     app.state.http_authentication = authentication
     app.state.backend_authorization_header = backend_authorization_header
     app.state.allowed_socket_paths = frozenset(allowed_socket_paths)
+    app.state.allowed_backend_key_targets = frozenset(allowed_backend_key_targets)
     app.add_middleware(
         HTTPBearerAuthenticationMiddleware,
         public_paths=PUBLIC_FRONTEND_PATHS,
@@ -1255,6 +1352,14 @@ def main() -> None:
         metavar="PATH",
         help="Read the bearer key sent to backend LMCache HTTP servers from PATH.",
     )
+    parser.add_argument(
+        "--backend-key-allowlist",
+        action="append",
+        default=None,
+        metavar="HOST:PORT",
+        help="TCP target allowed to receive the backend API key. Repeatable and "
+        "comma-separated. Needed for supplier-discovered targets.",
+    )
 
     args = parser.parse_args()
 
@@ -1266,18 +1371,34 @@ def main() -> None:
         http_authentication, backend_authorization_header
     )
 
-    # Initialize node configuration
+    explicit_backend_key_targets = _backend_key_allowlist(
+        (), args.backend_key_allowlist
+    )
+
+    # Initialize node configuration. Supplier-discovered targets receive the
+    # backend key only when the operator explicitly authorizes them.
     declared_socket_paths = asyncio.run(
-        initialize_nodes(args.node_supplier_url, backend_authorization_header)
+        initialize_nodes(
+            args.node_supplier_url,
+            backend_authorization_header,
+            explicit_backend_key_targets,
+        )
     )
     # Supplier-discovered sockets stay untrusted unless the operator declares
     # them, so discovery still works for UDS deployments.
     allowed_socket_paths = _socket_allowlist(declared_socket_paths, args.uds_allowlist)
+    declared_backend_key_targets = (
+        frozenset() if args.node_supplier_url else _configured_tcp_targets(target_nodes)
+    )
+    allowed_backend_key_targets = _backend_key_allowlist(
+        declared_backend_key_targets, args.backend_key_allowlist
+    )
 
     app = create_app(
         http_authentication,
         backend_authorization_header,
         allowed_socket_paths,
+        allowed_backend_key_targets,
     )
     print(f"Monitoring service running at http://{args.host}:{args.port}")
     print(f"Node management: http://{args.host}:{args.port}/static/index.html")
