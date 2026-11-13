@@ -151,7 +151,7 @@ copies of the per-node step, all pointing at the same coordinator.
 
 .. code-block:: bash
 
-   lmcache coordinator --host 0.0.0.0 --port 9300
+   lmcache coordinator --host 10.0.0.1 --port 9300
 
 **Step 2 — on each node, start the LMCache server with P2P enabled.** Replace
 ``<NODE_IP>`` with that node's routable address (e.g. ``10.0.0.2``,
@@ -207,7 +207,7 @@ coordinator. This is the recommended way to develop and debug P2P.
 .. code-block:: bash
 
    # Terminal 1 — coordinator
-   lmcache coordinator --host 0.0.0.0 --port 9300
+   lmcache coordinator --host 127.0.0.1 --port 9300
 
    # Terminal 2 — node "A": LMCache server
    lmcache server \

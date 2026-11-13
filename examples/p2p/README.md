@@ -45,7 +45,7 @@ Open five terminals:
 
 ```bash
 # Terminal 1 — coordinator
-lmcache coordinator --host 0.0.0.0 --port 9300
+lmcache coordinator --host 127.0.0.1 --port 9300
 
 # Terminal 2 — node A: LMCache server
 lmcache server \
@@ -108,7 +108,7 @@ the per-node block, all pointing at the same coordinator.
 
 ```bash
 # Coordinator host (10.0.0.1)
-lmcache coordinator --host 0.0.0.0 --port 9300
+lmcache coordinator --host 10.0.0.1 --port 9300
 ```
 
 On **each** node, set `NODE_IP` to that node's routable address and run:
