@@ -28,6 +28,7 @@ PAGE_SIZE="${PAGE_SIZE:-64}"
 MAMBA_TRACK_INTERVAL="${MAMBA_TRACK_INTERVAL:-256}"
 CHUNK_SIZE="${CHUNK_SIZE:-256}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.8}"
+TP_SIZE="${TP_SIZE:-2}"
 SGLANG_READY_TIMEOUT="${SGLANG_READY_TIMEOUT:-900}"
 STORE_DRAIN_SECONDS="${STORE_DRAIN_SECONDS:-20}"
 MAX_TOKENS="${MAX_TOKENS:-128}"
@@ -56,7 +57,7 @@ fi
 
 echo "=== Kimi-Linear cross-TP-rank KV correctness test (SGLang cache flush) ==="
 echo "Model: $MODEL"
-echo "LMCache port: $LMCACHE_PORT | SGLang port: $SGLANG_PORT | TP=2"
+echo "LMCache port: $LMCACHE_PORT | SGLang port: $SGLANG_PORT | TP=$TP_SIZE"
 echo "Chunk size: $CHUNK_SIZE | page size: $PAGE_SIZE"
 echo "Mamba track interval: $MAMBA_TRACK_INTERVAL"
 echo "Results dir: $TP_DIR"
@@ -72,7 +73,7 @@ launch_sglang() {
         --model-path "$MODEL" \
         --host 127.0.0.1 \
         --port "$SGLANG_PORT" \
-        --tp-size 2 \
+        --tp-size "$TP_SIZE" \
         --trust-remote-code \
         --mem-fraction-static "$GPU_MEMORY_UTILIZATION" \
         --max-running-requests 1 \
