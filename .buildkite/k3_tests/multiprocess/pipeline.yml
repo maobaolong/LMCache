@@ -90,7 +90,7 @@ x-pod-1gpu: &pod-1gpu
 
 steps:
   - group: ":compression: DSV4 (1-GPU)"
-    if: build.env("VERIFY_AND_PIN_VLLM") !~ /true/ && build.env("VERIFY_AND_PIN_SGLANG") !~ /true/
+    if: build.env("ONLY_KIMI") !~ /true/ && build.env("VERIFY_AND_PIN_VLLM") !~ /true/ && build.env("VERIFY_AND_PIN_SGLANG") !~ /true/
     steps:
       # Retain uncompressed, 4x, and 128x KV paths without loading the full model.
       - label: ":compression: vllm / hma_dsv4_correctness / zmq"
@@ -188,6 +188,7 @@ steps:
     if: build.env("VERIFY_AND_PIN_VLLM") !~ /true/ && build.env("VERIFY_AND_PIN_SGLANG") !~ /true/
     steps:
       - label: ":compression: {{matrix.inference_engine}} / vllm_bench / {{matrix.request_transport}}"
+        if: build.env("ONLY_KIMI") !~ /true/
         command: .buildkite/k3_tests/multiprocess/run.sh vllm_bench
         matrix: *vllm-smoke-matrix
         env:
@@ -213,6 +214,7 @@ steps:
         artifact_paths: ["*.log"]
 
       - label: ":compression: {{matrix.inference_engine}} / long_doc_qa / {{matrix.request_transport}}"
+        if: build.env("ONLY_KIMI") !~ /true/
         command: .buildkite/k3_tests/multiprocess/run.sh long_doc_qa
         matrix: *common-matrix
         env:
@@ -225,6 +227,7 @@ steps:
         artifact_paths: ["*.log", "ci_results_*/long_doc_qa/**/*"]
 
       - label: ":compression: {{matrix.inference_engine}} / long_doc_qa_l2 / {{matrix.request_transport}}"
+        if: build.env("ONLY_KIMI") !~ /true/
         command: .buildkite/k3_tests/multiprocess/run.sh long_doc_qa_l2
         matrix: *common-matrix
         env:
@@ -240,6 +243,7 @@ steps:
         artifact_paths: ["*.log", "ci_results_*/long_doc_qa_l2/*.txt"]
 
       - label: ":compression: {{matrix.inference_engine}} / deadlock / {{matrix.request_transport}}"
+        if: build.env("ONLY_KIMI") !~ /true/
         command: .buildkite/k3_tests/multiprocess/run.sh deadlock
         matrix: *common-matrix
         env:
@@ -251,6 +255,7 @@ steps:
         artifact_paths: ["*.log"]
 
       - label: ":compression: {{matrix.inference_engine}} / mp_autostart_tp2 / {{matrix.request_transport}}"
+        if: build.env("ONLY_KIMI") !~ /true/
         command: .buildkite/k3_tests/multiprocess/run.sh mp_autostart_tp2
         matrix: *vllm-matrix
         env:
@@ -265,6 +270,7 @@ steps:
       # single 2-GPU pod (localhost). Verifies engine B serves a long prompt's
       # KV from engine A over P2P.
       - label: ":compression: {{matrix.inference_engine}} / p2p / {{matrix.request_transport}}"
+        if: build.env("ONLY_KIMI") !~ /true/
         command: .buildkite/k3_tests/multiprocess/run.sh p2p
         matrix: *vllm-matrix
         env:
@@ -295,7 +301,7 @@ steps:
         artifact_paths: ["*.log", "ci_results_*/kimi_linear_tp/**/*"]
 
   - group: ":compression: Multiprocess (1-GPU)"
-    if: build.env("VERIFY_AND_PIN_VLLM") !~ /true/ && build.env("VERIFY_AND_PIN_SGLANG") !~ /true/
+    if: build.env("ONLY_KIMI") !~ /true/ && build.env("VERIFY_AND_PIN_VLLM") !~ /true/ && build.env("VERIFY_AND_PIN_SGLANG") !~ /true/
     steps:
       # Correctness coverage for both transfer modes. engine_driven requires
       # SHM transport, so both matrix jobs use the existing dshm pod spec.
@@ -496,7 +502,7 @@ steps:
         artifact_paths: ["*.log"]
 
   - group: ":compression: Multiprocess (CPU-only)"
-    if: build.env("VERIFY_AND_PIN_VLLM") !~ /true/ && build.env("VERIFY_AND_PIN_SGLANG") !~ /true/
+    if: build.env("ONLY_KIMI") !~ /true/ && build.env("VERIFY_AND_PIN_VLLM") !~ /true/ && build.env("VERIFY_AND_PIN_SGLANG") !~ /true/
     steps:
       # Note: LMCACHE_SHM_NAME uses `${VAR-default}` (not `:-`) in the
       # runner script, so an empty string ("") is meaningful and differs
