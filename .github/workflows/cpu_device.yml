@@ -1,62 +1,81 @@
-name: Triton CPU SIGILL diagnosis
-on:
-  workflow_dispatch:
+name: Verify CPU crash diagnostics
+'on':
+  workflow_dispatch: null
 permissions:
   contents: read
 jobs:
-  reproduce:
+  verify:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        replica: [1, 2, 3, 4, 5, 6, 7, 8]
+    timeout-minutes: 15
+    env:
+      TRITON_CACHE_DIR: ${{ runner.temp }}/cpu-device-triton
     steps:
-      - name: Select remaining Intel CPU model
-        id: cpu
-        run: |
-          lscpu
-          if lscpu | grep -q '8573C'; then
-            echo 'target=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'target=false' >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.cpu.outputs.target == 'true'
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
-      - if: steps.cpu.outputs.target == 'true'
-        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
-        with:
-          python-version: '3.12'
-      - name: Record hardware and install exact dependencies
-        if: steps.cpu.outputs.target == 'true'
-        run: |
-          mkdir -p diagnosis
-          lscpu | tee diagnosis/lscpu.txt
-          cat /proc/cpuinfo > diagnosis/cpuinfo.txt
-          sudo apt-get update -qq
-          sudo apt-get install -y gdb
-          pip install torch==2.14.0+cpu numpy --index-url https://download.pytorch.org/whl/cpu
-          pip install https://github.com/triton-lang/triton-cpu/releases/download/v3.8.0/triton-3.8.0+cpu-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-          pip download --no-deps vllm-cpu-nightly==0.34.1.dev202611211401 -d diagnosis
-          python - <<'PY'
-          import pathlib, zipfile
-          with zipfile.ZipFile(next(pathlib.Path('diagnosis').glob('*.whl'))) as z:
-              z.extract('vllm/v1/worker/gpu/buffer_utils.py', 'diagnosis/source')
-          PY
-          pip freeze | tee diagnosis/dependencies.txt
-      - name: Run exact kernel under GDB
-        if: steps.cpu.outputs.target == 'true'
-        env:
-          REPRO_DUMP_DIR: diagnosis/kernel
-        run: |
-          set -o pipefail
-          gdb -batch -ex run -ex 'x/12i $pc-20' -ex 'info registers' -ex bt --args python -u .github/scripts/repro_staged_write.py diagnosis/source/vllm/v1/worker/gpu/buffer_utils.py 2>&1 | tee diagnosis/gdb.log || true
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        if: always() && steps.cpu.outputs.target == 'true'
-        with:
-          name: triton-cpu-diagnosis-${{ matrix.replica }}
-          path: |
-            diagnosis/*.txt
-            diagnosis/*.log
-            diagnosis/kernel/
-            diagnosis/source/
+    - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+    - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
+      with:
+        python-version: '3.12'
+    - name: Install GDB
+      run: sudo apt-get update -qq && sudo apt-get install -y gdb
+    - name: Configure native crash diagnostics (Linux)
+      run: 'lscpu | tee /tmp/cpu_device_hardware.log
+
+        sudo sysctl -w kernel.core_pattern="${RUNNER_TEMP}/cpu-device-core.%e.%p"
+
+        '
+    - name: Crash inside an unlinked native library
+      run: 'ulimit -c unlimited
+
+        echo 0x15 > /proc/self/coredump_filter
+
+        mkdir -p "$TRITON_CACHE_DIR"
+
+        printf ''void trigger(void) { __builtin_trap(); }\n'' > "$RUNNER_TEMP/crash.c"
+
+        gcc -shared -fPIC -g "$RUNNER_TEMP/crash.c" -o "$RUNNER_TEMP/crash.so"
+
+        cp "$RUNNER_TEMP/crash.so" "$TRITON_CACHE_DIR/kernel.so"
+
+        set +e
+
+        python - <<''REPRO''
+
+        import ctypes, os
+
+        path = os.environ[''RUNNER_TEMP''] + ''/crash.so''
+
+        library = ctypes.CDLL(path)
+
+        os.unlink(path)
+
+        library.trigger()
+
+        REPRO
+
+        status=$?
+
+        set -e
+
+        echo "Expected SIGILL exit status: $status"
+
+        test "$status" -eq 132
+
+        '
+    - name: Inspect native crashes (Linux)
+      run: "for core in \"$RUNNER_TEMP\"/cpu-device-core.*; do\n  [[ -f \"$core\" ]] || continue\n  gdb -batch -quiet \\\n    -ex 'set auto-load off' \\\n    -ex 'info proc mappings' \\\n    -ex 'x/16i $pc-24' \\\n    -ex 'thread apply all bt 12' \\\n    \"$(command -v python)\" \"$core\" \\\n    > \"/tmp/cpu_device_$(basename \"$core\").log\" 2>&1 || true\ndone\n"
+    - name: Verify the native instruction and retained binary
+      run: 'grep -l ''ud2'' /tmp/cpu_device_cpu-device-core.*.log
+
+        ! grep -q ''Cannot access memory at address'' /tmp/cpu_device_cpu-device-core.*.log
+
+        test -f "$TRITON_CACHE_DIR/kernel.so"
+
+        echo ''PASS: fault instruction from the unlinked shared library survived in the core''
+
+        '
+    - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+      if: always()
+      with:
+        name: cpu-diagnostics-verification
+        path: '/tmp/cpu_device_*.log
+
+          ${{ env.TRITON_CACHE_DIR }}/'
