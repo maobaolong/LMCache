@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generate one token with the CI's tiny MLA profile, without LMCache."""
+import os
 from vllm import LLM, SamplingParams
 
 if __name__ == "__main__":
     model = LLM(
-        model="/work/deepseek-model",
+        model=os.environ["REPRO_MODEL_DIR"],
         dtype="bfloat16",
         load_format="dummy",
         hf_overrides={
