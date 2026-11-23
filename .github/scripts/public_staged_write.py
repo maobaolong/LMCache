@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise the original vLLM public staging API without a model or connector."""
 import torch
+import vllm.v1.worker.cpu.shm
+from vllm.platforms import current_platform
+current_platform.import_kernels()
 from vllm.v1.worker.gpu.buffer_utils import StagedWriteTensor
 
 torch.set_num_threads(2)
