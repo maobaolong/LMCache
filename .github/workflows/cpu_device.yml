@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        replica: [1, 2, 3]
+        replica: [1, 2]
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
       - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
@@ -33,13 +33,13 @@ jobs:
           pip freeze | tee diagnosis/dependencies.txt
       - name: Install vLLM runtime
         run: VLLM_CPU_NIGHTLY_SPEC=vllm-cpu-nightly==0.34.1.dev202611211401 bash .github/scripts/install_vllm_cpu.sh
-      - name: Run exact kernel under GDB
-        env:
-          REPRO_DUMP_DIR: diagnosis/kernel
+      - name: Run MLA generation without LMCache under GDB
         run: |
-          set -o pipefail
-          gdb -batch -ex run -ex 'x/12i $pc-20' -ex 'info registers' -ex bt --args python -u .github/scripts/repro_staged_write.py diagnosis/source/vllm/v1/worker/gpu/buffer_utils.py 2>&1 | tee diagnosis/gdb.log || true
-          VLLM_TARGET_DEVICE=cpu gdb -batch -ex run -ex 'x/12i $pc-20' -ex 'info registers' -ex bt --args python -u .github/scripts/public_staged_write.py 2>&1 | tee diagnosis/public-gdb.log || true
+          mkdir -p diagnosis/model
+          curl -fsSL --max-time 60 https://github.com/opendataio/deepseek_v2_lite/archive/refs/tags/v1.0.tar.gz | tar xz --strip-components=1 -C diagnosis/model
+          export REPRO_MODEL_DIR="$PWD/diagnosis/model"
+          export VLLM_TARGET_DEVICE=cpu HF_HUB_OFFLINE=1
+          gdb -batch -ex 'set detach-on-fork off' -ex 'set follow-fork-mode child' -ex 'set schedule-multiple on' -ex run -ex 'x/12i $pc-20' -ex 'info registers' -ex 'thread apply all bt' --args python -u .github/scripts/repro_model.py 2>&1 | tee diagnosis/model-gdb.log || true
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
