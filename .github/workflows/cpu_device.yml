@@ -6,7 +6,11 @@ permissions:
 jobs:
   reproduce:
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3]
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
       - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
@@ -27,16 +31,19 @@ jobs:
               z.extract('vllm/v1/worker/gpu/buffer_utils.py', 'diagnosis/source')
           PY
           pip freeze | tee diagnosis/dependencies.txt
+      - name: Install vLLM runtime
+        run: VLLM_CPU_NIGHTLY_SPEC=vllm-cpu-nightly==0.34.1.dev202611211401 bash .github/scripts/install_vllm_cpu.sh
       - name: Run exact kernel under GDB
         env:
           REPRO_DUMP_DIR: diagnosis/kernel
         run: |
           set -o pipefail
-          gdb -batch -ex run -ex 'x/12i $pc-20' -ex 'info registers' -ex bt --args python -u .github/scripts/repro_staged_write.py diagnosis/source/vllm/v1/worker/gpu/buffer_utils.py 2>&1 | tee diagnosis/gdb.log
+          gdb -batch -ex run -ex 'x/12i $pc-20' -ex 'info registers' -ex bt --args python -u .github/scripts/repro_staged_write.py diagnosis/source/vllm/v1/worker/gpu/buffer_utils.py 2>&1 | tee diagnosis/gdb.log || true
+          VLLM_TARGET_DEVICE=cpu gdb -batch -ex run -ex 'x/12i $pc-20' -ex 'info registers' -ex bt --args python -u .github/scripts/public_staged_write.py 2>&1 | tee diagnosis/public-gdb.log || true
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
-          name: triton-cpu-diagnosis
+          name: triton-cpu-diagnosis-${{ matrix.replica }}
           path: |
             diagnosis/*.txt
             diagnosis/*.log
