@@ -10,13 +10,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        replica: [1, 2, 3, 4]
+        replica: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
-      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
+      - name: Select remaining Intel CPU model
+        id: cpu
+        run: |
+          lscpu
+          if lscpu | grep -q '8573C'; then
+            echo 'target=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'target=false' >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.cpu.outputs.target == 'true'
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - if: steps.cpu.outputs.target == 'true'
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
         with:
           python-version: '3.12'
       - name: Record hardware and install exact dependencies
+        if: steps.cpu.outputs.target == 'true'
         run: |
           mkdir -p diagnosis
           lscpu | tee diagnosis/lscpu.txt
@@ -33,13 +45,14 @@ jobs:
           PY
           pip freeze | tee diagnosis/dependencies.txt
       - name: Run exact kernel under GDB
+        if: steps.cpu.outputs.target == 'true'
         env:
           REPRO_DUMP_DIR: diagnosis/kernel
         run: |
           set -o pipefail
           gdb -batch -ex run -ex 'x/12i $pc-20' -ex 'info registers' -ex bt --args python -u .github/scripts/repro_staged_write.py diagnosis/source/vllm/v1/worker/gpu/buffer_utils.py 2>&1 | tee diagnosis/gdb.log || true
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        if: always()
+        if: always() && steps.cpu.outputs.target == 'true'
         with:
           name: triton-cpu-diagnosis-${{ matrix.replica }}
           path: |
