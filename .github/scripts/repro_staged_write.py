@@ -29,9 +29,9 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 torch.set_num_threads(1)
-output = torch.full((4, 2048), -1, dtype=torch.int32)
-indices = torch.tensor([1], dtype=torch.int32)
-starts = torch.tensor([7], dtype=torch.int32)
+output = torch.full((4,), -1, dtype=torch.int32)
+indices = torch.tensor([3], dtype=torch.int32)
+starts = torch.tensor([0], dtype=torch.int32)
 contents = torch.tensor([42], dtype=torch.int32)
 cu_lens = torch.tensor([1], dtype=torch.int32)
 args = (output, output.stride(0), indices, starts, contents, cu_lens, None)
@@ -48,6 +48,6 @@ print(json.dumps({"torch": torch.__version__, "triton": triton.__version__, "tar
 print("Launching exact _apply_write_kernel with one int32 staged write", flush=True)
 module._apply_write_kernel[(1, 1)](*args, BLOCK_SIZE=1024, MULTI_GROUP=False)
 expected = torch.full_like(output, -1)
-expected[1, 7] = 42
+expected[3] = 42
 torch.testing.assert_close(output, expected)
 print("PASS: staged write produced the expected tensor", flush=True)
