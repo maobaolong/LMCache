@@ -61,7 +61,7 @@ jobs:
 
         '
     - name: Inspect native crashes (Linux)
-      run: "for core in \"$RUNNER_TEMP\"/cpu-device-core.*; do\n  [[ -f \"$core\" ]] || continue\n  gdb -batch -quiet \\\n    -ex 'set auto-load off' \\\n    -ex 'info proc mappings' \\\n    -ex 'x/16i $pc-24' \\\n    -ex 'thread apply all bt 12' \\\n    \"$(command -v python)\" \"$core\" \\\n    > \"/tmp/cpu_device_$(basename \"$core\").log\" 2>&1 || true\ndone\n"
+      run: "for core in \"$RUNNER_TEMP\"/cpu-device-core.*; do\n  [[ -f \"$core\" ]] || continue\n  gdb -batch -quiet \\\n    -ex 'set auto-load off' \\\n    -ex 'info proc mappings' \\\n    -ex 'x/16i $pc' \\\n    -ex 'thread apply all bt 12' \\\n    \"$(command -v python)\" \"$core\" \\\n    > \"/tmp/cpu_device_$(basename \"$core\").log\" 2>&1 || true\ndone\n"
     - name: Verify the native instruction and retained binary
       run: 'grep -l ''ud2'' /tmp/cpu_device_cpu-device-core.*.log
 
