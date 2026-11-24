@@ -416,7 +416,7 @@ def fake_adapter(monkeypatch):
         "kv_wrapper_fds_delivered",
         lambda wrappers, fd_channel_path, timeout: nullcontext(),
     )
-    # Stub engine configuration, keeping the hint producer and registration real.
+    # Exercise real hint resolution through the stub config.
     config = ModuleType("vllm.config")
     config.get_current_vllm_config = lambda: SimpleNamespace(  # type: ignore[attr-defined]
         cache_config=SimpleNamespace(
@@ -438,7 +438,7 @@ def test_registration_completes_layout_from_engine(
     layout: str,
     hints: LayoutHints | None,
 ) -> None:
-    """Missing metadata is resolved by the real producer before the server RPC."""
+    """Registration fills missing layout hints from the engine."""
     adapter, client, _future = fake_adapter
     config = SimpleNamespace(
         cache_config=SimpleNamespace(
@@ -459,7 +459,7 @@ def test_registration_completes_layout_from_engine(
 def test_registration_without_layout_fails_before_state_or_rpc(
     fake_adapter: tuple, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An unavailable engine cannot leave a partially registered worker."""
+    """Missing layout metadata fails before registration."""
     adapter, client, _future = fake_adapter
     monkeypatch.setitem(sys.modules, "vllm.config", None)
     contexts = _patch_transfer_context_factory(monkeypatch)
@@ -475,7 +475,7 @@ def test_registration_without_layout_fails_before_state_or_rpc(
 def test_restore_preserves_registration_layout(
     fake_adapter: tuple, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Caller mutations and absent ambient config cannot alter restore metadata."""
+    """Restore reuses the saved hints after the caller mutates its copy."""
     adapter, client, _future = fake_adapter
     hints: LayoutHints = {"kv_layout": "HND", "num_kv_heads": 4}
     adapter.register_kv_caches(_cuda_kv_caches(), layout_hints=hints)

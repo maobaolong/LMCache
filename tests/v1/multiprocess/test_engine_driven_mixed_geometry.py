@@ -29,8 +29,6 @@ from lmcache.v1.common.group_view import EngineGroupInfo
 # Shapes are (kv planes, blocks, block size, heads, head size). gemma-4's real
 # situation: the wide group has half the hidden size and twice the block size, so
 # the two groups have equal page sizes and *unequal* block sizes.
-#
-# Both registration and the geometry helper receive the fixture's NHD layout.
 _NARROW_SHAPE = (2, 4, 4, 2, 8)
 _WIDE_PAGED_SHAPE = (2, 4, 8, 4, 2)
 

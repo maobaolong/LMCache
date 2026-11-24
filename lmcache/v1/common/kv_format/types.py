@@ -39,10 +39,8 @@ class LayoutHints(TypedDict, total=False):
             ``"HND"`` -- heads before block-size (``VLLM_KV_CACHE_LAYOUT=HND``).
             ``"BLHNC"`` / ``"BLNHC"`` -- blocks outermost, all layers
             packed per block (vLLM standardized layouts).
-            Required for ambiguous vLLM per-layer layouts. The engine adapter
-            must supply its resolved layout; discovery does not infer it from
-            the host device. Formats uniquely identified by their structure
-            (e.g. MLA and cross-layer caches) do not require this hint.
+            Required for vLLM fused rank-4 and split rank-5 caches. Structure-only
+            formats such as MLA and cross-layer caches do not need it.
         num_kv_heads: Number of KV heads per layer. Used by TRT-LLM to
             reshape its 4-D pool tensor into the canonical 6-D form.
         tokens_per_block: Tokens per paged block. Used by TRT-LLM to reshape

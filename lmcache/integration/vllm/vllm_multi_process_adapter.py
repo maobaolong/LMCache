@@ -1553,18 +1553,14 @@ class LMCacheMPWorkerAdapter:
             kv_caches: A dict of kv caches to register. The keys are the
                 layer names and the values are the corresponding tensors.
             engine_group_infos: LMCache-owned engine KV cache group metadata.
-            layout_hints: Engine layout hints forwarded to the server. A missing
-                ``kv_layout`` is resolved from the ambient vLLM config, including
-                when hints are empty or partial. A validated copy is saved for
-                recovery registration.
+            layout_hints: Engine metadata, copied for recovery. Missing
+                ``kv_layout`` is filled from the current vLLM config.
 
         Raises:
             ConnectionError: if the server does not respond within
                 mq_timeout.
-            ValueError: if the LMCache chunk size is not a multiple of an
-                engine group's ``tokens_per_block`` (chunk boundaries would
-                not align with that group's paged-chunk boundaries), or the
-                layout is unavailable, unresolved, or invalid.
+            ValueError: if the chunk size does not align with an engine group's
+                ``tokens_per_block``, or the layout is unavailable or invalid.
             NotImplementedError: if vLLM resolves an unsupported layout.
         """
         logger.info("Registering kv caches")

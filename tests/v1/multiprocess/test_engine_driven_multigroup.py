@@ -63,8 +63,7 @@ from lmcache.v1.multiprocess.transport.server_factory import create_request_serv
 def _detected_block_size(kv_caches: dict[str, torch.Tensor]) -> int:
     """Return the block size registration will derive for ``kv_caches``.
 
-    Registration and this helper use the fixture's explicit NHD layout, so
-    sliding-window expectations do not depend on the test host's device.
+    Use the same NHD layout as registration.
     """
     block_size, *_ = compute_kv_layout(kv_caches, layout_hints={"kv_layout": "NHD"})
     return block_size

@@ -35,16 +35,14 @@ def vllm_layout_hints(
     *,
     layout_hints: LayoutHints | None = None,
 ) -> LayoutHints:
-    """Build registration hints containing a valid vLLM KV-cache layout.
+    """Fill missing vLLM layout metadata and return a validated copy.
 
     Args:
-        vllm_config: Engine config queried when ``kv_layout`` is missing.
-            If omitted, query the ambient vLLM config at registration time.
-        layout_hints: Optional engine metadata. An explicit ``kv_layout``
-            takes precedence and avoids querying vLLM; other keys are preserved.
+        vllm_config: Config to query; defaults to the current vLLM config.
+        layout_hints: Existing hints. An explicit ``kv_layout`` takes precedence.
 
     Returns:
-        An independent copy containing the validated ``kv_layout``.
+        A copy with ``kv_layout`` set and other hints preserved.
 
     Raises:
         ValueError: If the layout is unavailable, unresolved, or invalid.

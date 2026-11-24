@@ -204,7 +204,7 @@ def test_registration_forwards_resolved_engine_layout(
     connectors: tuple[LMCacheMPConnector, LMCacheMPConnector],
     mock_io: SimpleNamespace,
 ) -> None:
-    """The real connector and hint builder carry CacheConfig layout to transfer."""
+    """Connector registration forwards the engine's resolved layout."""
     mock_io.transfer.register.assert_called_once()
     assert mock_io.transfer.register.call_args.kwargs["layout_hints"] == {
         "kv_layout": "NHD"
