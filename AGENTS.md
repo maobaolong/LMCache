@@ -377,3 +377,20 @@ When asked to review a PR, use the `pr-review` skill; before creating a PR,
 self-check with the `pre-pr-check` skill (both under `.claude/skills/`). Create
 the PR as a draft and leave the ready-for-review transition to the submitting
 human after their self-review.
+
+### Validation wrapper operations
+
+Use full 40-character commit IDs for Buildkite requests targeting fork-only
+qualification commits. A short SHA can fail checkout after the agent fetches
+the upstream PR head.
+
+A build-wide PINNED_VLLM_VERSION also reaches the CPU E2E runner. When a mixed
+CUDA/CPU qualification needs a CUDA override, set VLLM_CPU_NIGHTLY_SPEC to an
+independently verified vllm-cpu-nightly version. CUDA and CPU package versions
+are different publication coordinates.
+
+GitHub HTML attachments can remain staged (HTTP 404) after upload. Saving a
+PR body through REST alone did not activate the new attachment. Save the final
+body in the same GitHub description web form that owns the upload, then verify
+the attachment without authentication and compare its SHA256 with the local
+file before publishing it as review evidence.
