@@ -57,7 +57,8 @@ def detect_format(
 
     Raises:
         ValueError: If no detector exists for *serving_engine*, or the structure
-            matches no known format.
+            matches no known format. Ambiguous vLLM per-layer caches also
+            require an engine-provided ``layout_hints["kv_layout"]``.
     """
     kv_caches = attempt_permute_to_contiguous_view(kv_caches)
     detector = get_detector(serving_engine)

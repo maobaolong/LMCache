@@ -63,14 +63,10 @@ from lmcache.v1.multiprocess.transport.server_factory import create_request_serv
 def _detected_block_size(kv_caches: dict[str, torch.Tensor]) -> int:
     """Return the block size registration will derive for ``kv_caches``.
 
-    A 5-D per-layer tensor is ``[2, NB, BS, NH, HS]`` under NHD and
-    ``[2, NB, NH, BS, HS]`` under HND, so the block size depends on the
-    layout the detector resolves -- which is process-level (vLLM's CPU
-    backend is forced to HND, GPU defaults to NHD). Tests derive it from
-    the same helper registration uses instead of hard-coding one layout's
-    value, so they hold wherever they run.
+    Registration and this helper use the fixture's explicit NHD layout, so
+    sliding-window expectations do not depend on the test host's device.
     """
-    block_size, *_ = compute_kv_layout(kv_caches)
+    block_size, *_ = compute_kv_layout(kv_caches, layout_hints={"kv_layout": "NHD"})
     return block_size
 
 
@@ -367,6 +363,7 @@ def test_register_accepts_sliding_window_groups() -> None:
                 engine_group_id=1, layer_indices=(1,), sw_size_tokens=sw_tokens
             ),
         ],
+        layout_hints={"kv_layout": "NHD"},
     )
     # Group 1's half-chunk window is 1 of the 2 blocks per chunk. Group 0
     # (full attention) keeps both.
@@ -755,6 +752,7 @@ def test_single_compressed_group_worker_server_roundtrip(
                 )
             ],
             lmcache_chunk_tokens=chunk_tokens,
+            layout_hints={"kv_layout": "NHD"},
         )
         for _ in range(2):
             assert worker.submit_store(
@@ -824,6 +822,7 @@ def test_register_payload_carries_group_layouts() -> None:
             EngineGroupInfo(engine_group_id=0, layer_indices=(0, 1)),
             EngineGroupInfo(engine_group_id=1, layer_indices=(2,)),
         ],
+        layout_hints={"kv_layout": "NHD"},
     )
     payload: RegisterEngineDrivenContextPayload = sent[0]
     assert len(payload.group_layouts) == 2
@@ -869,6 +868,7 @@ def _register_capturing_payload(
         blocks_in_chunk=2,
         mq_timeout=1.0,
         engine_group_infos=engine_group_infos,
+        layout_hints={"kv_layout": "NHD"},
     )
     return sent[0], ctx
 
@@ -956,6 +956,7 @@ def test_compressed_groups_roundtrip(
         1.0,
         engine_group_infos=infos,
         lmcache_chunk_tokens=chunk_tokens,
+        layout_hints={"kv_layout": "NHD"},
     )
     try:
         payload = client.register_kv_cache_engine_driven_context.call_args.args[0]
@@ -1121,6 +1122,7 @@ def test_register_uses_adapter_chunk_size_over_local_group_lcm() -> None:
             mq_timeout=1.0,
             engine_group_infos=infos,
             **extra,
+            layout_hints={"kv_layout": "NHD"},
         )
         return sent[0], ctx
 

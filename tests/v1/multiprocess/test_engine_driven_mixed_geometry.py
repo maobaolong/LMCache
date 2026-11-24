@@ -30,12 +30,7 @@ from lmcache.v1.common.group_view import EngineGroupInfo
 # situation: the wide group has half the hidden size and twice the block size, so
 # the two groups have equal page sizes and *unequal* block sizes.
 #
-# The two shapes must differ at BOTH dim 2 and dim 3, because which of the two is
-# the block size depends on the resolved kv_layout: NHD reads the block size at
-# dim 2, HND at dim 3 (VLLM_Detector forces HND whenever torch_device_type is
-# "cpu", so the CPU-only unit lane takes the latter). A fixture that differs at
-# only one of them collapses to a single block size under the other layout and
-# the mixed-geometry premise silently disappears.
+# Both registration and the geometry helper receive the fixture's NHD layout.
 _NARROW_SHAPE = (2, 4, 4, 2, 8)
 _WIDE_PAGED_SHAPE = (2, 4, 8, 4, 2)
 
@@ -46,7 +41,9 @@ def _block_size_of(shape: tuple[int, ...]) -> int:
     Uses the production helper rather than re-deriving it from ``shape`` so the
     test cannot disagree with the code it checks about which dim is the block.
     """
-    block_size, *_ = compute_kv_layout({"layer": torch.zeros(shape)})
+    block_size, *_ = compute_kv_layout(
+        {"layer": torch.zeros(shape)}, layout_hints={"kv_layout": "NHD"}
+    )
     return block_size
 
 
@@ -105,6 +102,7 @@ def test_groups_with_unequal_block_sizes_register_the_whole_chunk() -> None:
                 tokens_per_block=wide_block,
             ),
         ],
+        layout_hints={"kv_layout": "NHD"},
     )
 
     window_tokens = [gl.window_tokens for gl in sent[0].group_layouts]

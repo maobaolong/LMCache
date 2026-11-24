@@ -100,7 +100,9 @@ def _mla_caches(names: list[str]) -> dict[str, torch.Tensor]:
 def test_conversion_defaults_to_single_group_without_config():
     """No vLLM KV cache groups -> all layers fall into a single engine group."""
     spec = create_engine_group_infos_from_vllm(
-        None, _same_shape_caches(["layer.0", "layer.1"])
+        None,
+        _same_shape_caches(["layer.0", "layer.1"]),
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert num_engine_groups(spec) == 1
@@ -120,10 +122,12 @@ def test_connector_and_server_agree_on_mixed_stride_groups() -> None:
         )
         for idx, stride in enumerate((65536, 65536, 65536, 73856))
     }
-    infos = create_engine_group_infos_from_vllm(None, caches)
+    infos = create_engine_group_infos_from_vllm(
+        None, caches, layout_hints={"kv_layout": "NHD"}
+    )
     assert [info.layer_indices for info in infos] == [(0, 1, 2), (3,)]
     normalized, formats = normalize_and_discover_per_layer_formats(
-        list(caches.values()), [], EngineType.VLLM
+        list(caches.values()), [], EngineType.VLLM, layout_hints={"kv_layout": "NHD"}
     )
     manager = KVLayerGroupsManager(
         normalized, engine_kv_formats=formats, engine_group_infos=infos
@@ -147,6 +151,7 @@ def test_conversion_preserves_engine_group_layers():
             ]
         ),
         _same_shape_caches(["layer.0", "layer.1", "layer.2", "layer.3"]),
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert num_engine_groups(spec) == 2
@@ -171,6 +176,7 @@ def test_conversion_splits_by_lmcache_layer_identity():
             ]
         ),
         caches,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [group.engine_group_id for group in spec] == [0, 1, 0]
@@ -199,6 +205,7 @@ def test_conversion_resolves_sliding_window_size():
             ]
         ),
         _same_shape_caches(["layer.0", "layer.1", "layer.2"]),
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [group.sw_size_tokens for group in spec] == [-1, 64, 128]
@@ -217,6 +224,7 @@ def test_conversion_ignores_full_attention_sliding_window():
             ]
         ),
         _same_shape_caches(["layer.0", "layer.1"]),
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [group.sw_size_tokens for group in spec] == [-1]
@@ -232,6 +240,7 @@ def test_conversion_defaults_sliding_window_for_non_sw_spec():
             ]
         ),
         _same_shape_caches(["layer.0"]),
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [group.sw_size_tokens for group in spec] == [-1]
@@ -249,6 +258,7 @@ def test_conversion_resolves_mamba_align_window():
             ]
         ),
         _same_shape_caches(["layer.0", "layer.1"]),
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [group.sw_size_tokens for group in spec] == [-1, 16]
@@ -266,6 +276,7 @@ def test_conversion_mamba_non_align_not_windowed():
             ]
         ),
         _same_shape_caches(["layer.0"]),
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [group.sw_size_tokens for group in spec] == [-1]
@@ -290,6 +301,7 @@ def test_conversion_uniform_type_specs_resolve_per_layer():
             kv_cache_groups=[MockKVCacheGroup(["layer.0", "layer.1"], uniform_spec)]
         ),
         caches,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [group.layer_indices for group in spec] == [(0,), (1,)]
@@ -312,6 +324,7 @@ def test_conversion_mixed_window_layers_in_one_group_rejected():
                 kv_cache_groups=[MockKVCacheGroup(["layer.0", "layer.1"], uniform_spec)]
             ),
             _same_shape_caches(["layer.0", "layer.1"]),
+            layout_hints={"kv_layout": "NHD"},
         )
 
 
@@ -333,6 +346,7 @@ def test_conversion_mixed_kv_and_mla_groups():
             ]
         ),
         caches,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert num_engine_groups(spec) == 2
@@ -367,6 +381,7 @@ def test_conversion_uniform_group_mixes_kv_and_mla_layouts():
             ]
         ),
         caches,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     # One vLLM engine group, but two LMCache groups split by per-layer format.
@@ -434,7 +449,9 @@ def test_aux_pools_with_one_block_size_share_engine_and_kernel_group():
     caches["cb.aux_pool.16"] = torch.randn(4, 16, 8, dtype=torch.float16)
     caches["cb.aux_pool.16.b"] = torch.randn(4, 16, 8, dtype=torch.float16)
 
-    spec = create_engine_group_infos_from_vllm(None, caches)
+    spec = create_engine_group_infos_from_vllm(
+        None, caches, layout_hints={"kv_layout": "NHD"}
+    )
 
     aux = [g for g in spec if g.extra_object_group_tag]
     assert len(aux) == 1
@@ -453,7 +470,9 @@ def test_aux_pools_with_distinct_block_sizes_get_distinct_groups():
     caches["cb.aux_pool.16"] = torch.randn(4, 16, 8, dtype=torch.float16)
     caches["cb.aux_pool.32"] = torch.randn(4, 16, 8, dtype=torch.float16)
 
-    spec = create_engine_group_infos_from_vllm(None, caches)
+    spec = create_engine_group_infos_from_vllm(
+        None, caches, layout_hints={"kv_layout": "NHD"}
+    )
 
     aux = sorted(
         (g for g in spec if g.extra_object_group_tag),
@@ -477,6 +496,7 @@ def test_conversion_scales_attention_tokens_per_block_under_dcp():
         ),
         _same_shape_caches(["layer.0", "layer.1"]),
         dcp_size=2,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     # Attention scaled, Mamba (replicated state) untouched.
@@ -493,9 +513,14 @@ def test_conversion_tokens_per_block_unscaled_without_dcp():
     )
     caches = ["layer.0", "layer.1"]
 
-    default = create_engine_group_infos_from_vllm(groups, _same_shape_caches(caches))
+    default = create_engine_group_infos_from_vllm(
+        groups, _same_shape_caches(caches), layout_hints={"kv_layout": "NHD"}
+    )
     explicit = create_engine_group_infos_from_vllm(
-        groups, _same_shape_caches(caches), dcp_size=1
+        groups,
+        _same_shape_caches(caches),
+        dcp_size=1,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [g.tokens_per_block for g in default] == [16, 16]
@@ -574,6 +599,7 @@ def test_conversion_reads_kv_cache_group_manager_config() -> None:
         SimpleNamespace(kv_cache_groups=groups),
         _same_shape_caches(names),
         dcp_size=2,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [g.engine_group_id for g in spec] == [0, 1, 2]
@@ -657,6 +683,7 @@ def test_conversion_excludes_scratch_group_layers(
             ]
         ),
         _same_shape_caches(["layer.0", "layer.1", "layer.2"]),
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [g.engine_group_id for g in spec] == [0, 2]
@@ -687,6 +714,7 @@ def test_conversion_skips_format_discovery_for_scratch_layers(
             ]
         ),
         kv_caches,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [g.engine_group_id for g in spec] == [0]
@@ -712,6 +740,7 @@ def test_conversion_marks_tp_replicated_groups():
         _same_shape_caches(["mla.0", "kda.0", "ple.0"]),
         dcp_size=2,
         kv_tp_size=8,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [group.tp_replicas for group in infos] == [8, 1, 1]
@@ -741,6 +770,7 @@ def test_conversion_mixed_uniform_group_replicates_only_its_mla_layers():
         kv_caches,
         dcp_size=2,
         kv_tp_size=8,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert {info.engine_group_id for info in infos} == {0}
@@ -764,6 +794,7 @@ def test_conversion_mla_spec_without_max_tp_shards_is_replicated():
         ),
         _same_shape_caches(["mla.0", "attn.0"]),
         kv_tp_size=8,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [group.tp_replicas for group in infos] == [8, 1]
@@ -783,6 +814,7 @@ def test_conversion_partial_tp_sharding_is_not_replicated():
         _same_shape_caches(["mla.0"]),
         dcp_size=2,
         kv_tp_size=8,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [(group.tp_replicas, group.dcp_shards) for group in infos] == [(1, 1)]
@@ -803,6 +835,7 @@ def test_conversion_pure_mla_model_replicates_every_group():
         _same_shape_caches(["mla.0", "mla.1"]),
         dcp_size=2,
         kv_tp_size=8,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     assert [(group.tp_replicas, group.dcp_shards) for group in infos] == [(8, 2)]

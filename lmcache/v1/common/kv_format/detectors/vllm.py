@@ -9,7 +9,6 @@ from typing import Optional
 import torch
 
 # First Party
-from lmcache import torch_device_type
 from lmcache.utils import EngineType
 from lmcache.v1.common.kv_format.detectors.base import (
     EngineDetector,
@@ -18,6 +17,7 @@ from lmcache.v1.common.kv_format.detectors.base import (
 from lmcache.v1.common.kv_format.types import (
     KV_LAYOUT_NAMES,
     DiscoverableKVCache,
+    KVLayoutName,
     LayoutHints,
 )
 from lmcache.v1.common.logging import init_logger
@@ -26,15 +26,26 @@ import lmcache.lmcache_native as lmcache_native
 logger = init_logger(__name__)
 
 
-def resolve_vllm_kv_layout(
-    layout_hints: LayoutHints, cpu_attention_backend: bool
-) -> str:
-    """Validate an explicit ``kv_layout`` hint or choose a legacy default."""
+def resolve_vllm_kv_layout(layout_hints: LayoutHints) -> KVLayoutName:
+    """Read the engine-provided layout for an otherwise ambiguous KV shape.
+
+    Args:
+        layout_hints: Registration metadata containing the engine's resolved
+            ``kv_layout``. Shape and stride alone cannot distinguish head and
+            block-token axes.
+
+    Returns:
+        The validated layout name supplied by the engine.
+
+    Raises:
+        ValueError: If ``kv_layout`` is absent or unsupported.
+    """
     kv_layout = layout_hints.get("kv_layout")
     if kv_layout is None:
-        # Registrations predating layout hints relied on the CPU backend's HND
-        # allocation and the NHD default everywhere else.
-        return "HND" if cpu_attention_backend else "NHD"
+        raise ValueError(
+            "kv_layout hint is required for this vLLM KV cache shape; "
+            "pass the engine's resolved layout at KV-cache registration."
+        )
     if kv_layout not in KV_LAYOUT_NAMES:
         raise ValueError(
             f"kv_layout hint {kv_layout!r} is not a layout LMCache supports; "
@@ -57,11 +68,12 @@ class VLLM_Detector(EngineDetector):
         kv_caches: DiscoverableKVCache,
         layout_hints: LayoutHints,
     ) -> "tuple[Optional[lmcache_native.EngineKVFormat], DiscoverableKVCache]":
-        kv_layout = resolve_vllm_kv_layout(
-            layout_hints, cpu_attention_backend=torch_device_type == "cpu"
-        )
-        is_hnd = kv_layout in ("HND", "BLHNC")
+        """Identify the format using structure and engine-provided layout hints.
 
+        Rank-4 fused and rank-5 split per-layer caches require ``kv_layout``;
+        a missing or unsupported hint raises ``ValueError``. Structure-only
+        formats do not read the layout hint.
+        """
         # Fused K/V is the only rank-4 vLLM layout, so its raw rank
         # identifies it unambiguously (a 5-D split would collide with
         # flash-infer when num_heads == 2). The two middle axes are NH/BS
@@ -76,6 +88,8 @@ class VLLM_Detector(EngineDetector):
             and isinstance(kv_caches[0], torch.Tensor)
             and kv_caches[0].dim() == 4
         ):
+            kv_layout = resolve_vllm_kv_layout(layout_hints)
+            is_hnd = kv_layout in ("HND", "BLHNC")
             # vLLM >= 0.29 allocates the DSA indexer cache through the MLA
             # spec, so its plane carries a singleton head axis. Squeeze it so
             # the blocked page layout is addressed by its own format rather
@@ -124,6 +138,8 @@ class VLLM_Detector(EngineDetector):
         ):
             return lmcache_native.EngineKVFormat.NL_X_NB_TWO_NH_ONE_BS_HS, kv_caches
         if list_depth == 1 and tensor_ndim == 5:
+            kv_layout = resolve_vllm_kv_layout(layout_hints)
+            is_hnd = kv_layout in ("HND", "BLHNC")
             if first_tensor.shape[0] == 2:  # K/V axis first
                 if is_hnd:
                     return lmcache_native.EngineKVFormat.NL_X_TWO_NB_NH_BS_HS, kv_caches

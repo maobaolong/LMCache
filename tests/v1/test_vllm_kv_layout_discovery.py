@@ -13,6 +13,7 @@ import sys
 
 # Third Party
 import pytest
+import torch
 
 # First Party
 from lmcache.integration.vllm.utils import (
@@ -20,6 +21,8 @@ from lmcache.integration.vllm.utils import (
     try_get_vllm_kv_cache_layout,
     vllm_layout_hints,
 )
+from lmcache.v1.client.transfer_context.base import compute_kv_layout
+import lmcache.lmcache_native as lmcache_native
 
 UNSUPPORTED_LAYOUTS = ("LHBNC", "BHLNC")
 
@@ -162,6 +165,24 @@ class TestTryGetVllmKVCacheLayout:
 
 
 class TestVllmLayoutHints:
+    @pytest.mark.parametrize(
+        ("resolved_layout", "expected_format"),
+        [
+            ("LBNHC", lmcache_native.EngineKVFormat.NL_X_NB_BS_NH_CS),
+            ("LBHNC", lmcache_native.EngineKVFormat.NL_X_NB_NH_BS_CS),
+        ],
+    )
+    def test_resolved_layout_reaches_transfer_metadata(
+        self, resolved_layout: str, expected_format: lmcache_native.EngineKVFormat
+    ) -> None:
+        # Equal head and block dimensions cannot identify the layout by shape.
+        kv_caches = {"layer": torch.zeros(7, 4, 4, 16, dtype=torch.float16)}
+        hints = vllm_layout_hints(make_vllm_config(resolved_layout))
+
+        metadata = compute_kv_layout(kv_caches, layout_hints=hints)
+
+        assert metadata[4] == expected_format
+
     def test_hint_present_and_translated(self):
         config = make_vllm_config("LBHNC")
         assert vllm_layout_hints(config) == {"kv_layout": "HND"}
@@ -189,18 +210,14 @@ class TestResolveVllmKVLayout:
         )
         return detectors_vllm.resolve_vllm_kv_layout
 
-    def test_cpu_backend_honors_explicit_layout(self, resolve):
-        assert resolve({"kv_layout": "NHD"}, cpu_attention_backend=True) == "NHD"
+    @pytest.mark.parametrize("layout", ("NHD", "HND", "BLHNC", "BLNHC"))
+    def test_explicit_layout_passes_through(self, resolve, layout: str) -> None:
+        assert resolve({"kv_layout": layout}) == layout
 
-    def test_missing_hint_defaults_to_nhd(self, resolve):
-        assert resolve({}, cpu_attention_backend=False) == "NHD"
-
-    def test_missing_cpu_hint_keeps_legacy_hnd_default(self, resolve):
-        assert resolve({}, cpu_attention_backend=True) == "HND"
-
-    def test_hnd_hint_passes_through(self, resolve):
-        assert resolve({"kv_layout": "HND"}, cpu_attention_backend=False) == "HND"
+    def test_missing_hint_raises(self, resolve) -> None:
+        with pytest.raises(ValueError, match="kv_layout.*required"):
+            resolve({})
 
     def test_unsupported_hint_rejected(self, resolve):
         with pytest.raises(ValueError, match="LHBNC"):
-            resolve({"kv_layout": "LHBNC"}, cpu_attention_backend=False)
+            resolve({"kv_layout": "LHBNC"})

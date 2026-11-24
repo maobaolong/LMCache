@@ -212,10 +212,12 @@ server smoke tests on a CPU-only host) and CLI loading without torch. In
 MP mode, CPU workers use `EngineDrivenTransferContext` (inline or SHM
 backend) for KV transfer; there is no GPU-side connector involved.
 
-`normalize_kv_and_discover_format` also hardcodes `kv_layout = "HND"`
-when `torch_device_type == "cpu"`, because vLLM's
-`get_kv_cache_layout()` reports `NHD` for its CPU attention backend
-which is wrong for that backend's actual KV cache layout.
+`normalize_kv_and_discover_format` consumes engine-provided `kv_layout` hints
+for ambiguous per-layer layouts and does not inspect the host device. The
+vLLM integration obtains the resolved layout at registration time; its existing
+legacy compatibility handles older backends whose generic layout query differs
+from the physical allocation. Missing hints for ambiguous layouts raise
+`ValueError` instead of selecting a device-dependent default.
 
 ## Adding New Hardware
 

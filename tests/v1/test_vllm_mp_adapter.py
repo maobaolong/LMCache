@@ -413,11 +413,11 @@ def fake_adapter(monkeypatch):
         "kv_wrapper_fds_delivered",
         lambda wrappers, fd_channel_path, timeout: nullcontext(),
     )
-    # ``vllm_layout_hints`` returns a ``LayoutHints`` (TypedDict / dict at
-    # runtime); stub it with an empty dict.
+    # The registration fixture represents NHD caches, independently of the host.
     monkeypatch.setattr(
-        "lmcache.integration.vllm.utils.vllm_layout_hints",
-        lambda: {},
+        adapter_mod,
+        "vllm_layout_hints",
+        lambda: {"kv_layout": "NHD"},
     )
 
     adapter = _make_worker_adapter()
@@ -828,8 +828,9 @@ def test_register_kv_caches_cpu_submits_engine_driven_context_registration(
         lambda: False,
     )
     monkeypatch.setattr(
-        "lmcache.integration.vllm.utils.vllm_layout_hints",
-        lambda: {},
+        adapter_mod,
+        "vllm_layout_hints",
+        lambda: {"kv_layout": "NHD"},
         raising=False,
     )
     cpu_kv = {"layer.0": torch.randn(2, 8, 4, 2, 8)}
@@ -852,8 +853,9 @@ def test_register_kv_caches_tuple_caches_use_engine_driven_context(
         lambda: False,
     )
     monkeypatch.setattr(
-        "lmcache.integration.vllm.utils.vllm_layout_hints",
-        lambda: {},
+        adapter_mod,
+        "vllm_layout_hints",
+        lambda: {"kv_layout": "NHD"},
         raising=False,
     )
     # NL_X_TWO_X_NB_BS_NH_HS layout: [NB, BS, NH, HS] per plane.
@@ -1697,7 +1699,7 @@ def test_register_uses_local_context_when_self_transfer_ctx_nulled(
         "kv_wrapper_fds_delivered",
         lambda wrappers, fd_channel_path, timeout: nullcontext(),
     )
-    monkeypatch.setattr("lmcache.integration.vllm.utils.vllm_layout_hints", lambda: {})
+    monkeypatch.setattr(adapter_mod, "vllm_layout_hints", lambda: {})
     local_ctx = MagicMock(name="local_transfer_ctx")
     monkeypatch.setattr(
         adapter_mod, "create_transfer_context", lambda kv, **_kwargs: local_ctx

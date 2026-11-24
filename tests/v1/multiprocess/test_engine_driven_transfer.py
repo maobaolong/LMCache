@@ -787,7 +787,7 @@ def test_create_transfer_context_env_var_overrides_default(
             ),
             4,
             16,
-            None,
+            {"kv_layout": "NHD"},
             id="nhd",
         ),
         pytest.param(
@@ -824,7 +824,6 @@ def test_compute_kv_layout_and_gather_scatter_roundtrip(
     expected_block_size: int,
     expected_hidden_dim: int,
     layout_hints: "LayoutHints | None",
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Validate layout extraction and gather/scatter round-trip on CPU tensors."""
     # First Party
@@ -832,17 +831,6 @@ def test_compute_kv_layout_and_gather_scatter_roundtrip(
         compute_kv_layout,
         gather_paged_kv_to_cpu,
         scatter_cpu_to_paged_kv,
-    )
-
-    def _vllm_detector_device_type() -> str:
-        """Keep the detector on the active accelerator, but bypass CPU hosts."""
-
-        return torch_device_type if torch_device_type != "cpu" else "cuda"
-
-    # Keep format discovery independent of the host running the test.
-    monkeypatch.setattr(
-        "lmcache.v1.common.kv_format.detectors.vllm.torch_device_type",
-        _vllm_detector_device_type(),
     )
 
     source = {k: v.to(torch_device_type) for k, v in builder_fn().items()}
@@ -887,9 +875,7 @@ def test_compute_kv_layout_and_gather_scatter_roundtrip(
             assert torch.allclose(source[name][1], destination[name][5])
 
 
-def test_explicit_cpu_nhd_layout_preserves_physical_geometry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_explicit_cpu_nhd_layout_preserves_physical_geometry() -> None:
     """Regression for DeepSeek MLA on post-vllm#51718 CPU layouts.
 
     vLLM reports LBNHC/NHD and registers a rank-4 per-layer view. Treating it
@@ -901,10 +887,6 @@ def test_explicit_cpu_nhd_layout_preserves_physical_geometry(
         compute_kv_layout,
     )
 
-    monkeypatch.setattr(
-        "lmcache.v1.common.kv_format.detectors.vllm.torch_device_type",
-        "cpu",
-    )
     source = _make_fused_nhd_kv_caches(
         num_layers=2,
         num_blocks=16,
@@ -1173,14 +1155,6 @@ def test_gather_sliding_window_allocates_window_sized_chunks(
         scatter_cpu_to_paged_kv,
     )
 
-    def _vllm_detector_device_type() -> str:
-        return torch_device_type if torch_device_type != "cpu" else "cuda"
-
-    monkeypatch.setattr(
-        "lmcache.v1.common.kv_format.detectors.vllm.torch_device_type",
-        _vllm_detector_device_type(),
-    )
-
     num_layers, block_size, hidden_dim = 2, 4, 16
     source = {
         k: v.to(torch_device_type)
@@ -1201,6 +1175,7 @@ def test_gather_sliding_window_allocates_window_sized_chunks(
         [0, 1, 2, 3],
         blocks_per_chunk,
         blocks_per_window=blocks_per_window,
+        layout_hints={"kv_layout": "NHD"},
     )
     assert len(gathered) == 2
     for chunk in gathered:
@@ -1220,6 +1195,7 @@ def test_gather_sliding_window_allocates_window_sized_chunks(
         gathered,
         blocks_per_chunk,
         blocks_per_window=blocks_per_window,
+        layout_hints={"kv_layout": "NHD"},
     )
     torch_dev.synchronize()
     for name in source:
@@ -1353,13 +1329,16 @@ def test_scatter_respects_skip_first_n_tokens(
     destination = {
         name: torch.full_like(tensor, 999.0) for name, tensor in source.items()
     }
-    gathered = gather_paged_kv_to_cpu(source, [0, 1, 2, 3], blocks_per_chunk=4)
+    gathered = gather_paged_kv_to_cpu(
+        source, [0, 1, 2, 3], blocks_per_chunk=4, layout_hints={"kv_layout": "NHD"}
+    )
     scatter_cpu_to_paged_kv(
         destination,
         [0, 1, 2, 3],
         gathered,
         blocks_per_chunk=4,
         skip_first_n_tokens=skip_tokens,
+        layout_hints={"kv_layout": "NHD"},
     )
 
     for name in destination:
@@ -2622,6 +2601,7 @@ def test_gather_paged_kv_with_chunk_indices_subset() -> None:
         blocks_per_chunk=blocks_per_chunk,
         out=out_buffers,
         chunk_indices=[0, 2],
+        layout_hints={"kv_layout": "NHD"},
     )
     torch_dev.synchronize()
     # Result should be the same list as out_buffers (in-place fill)
@@ -2630,7 +2610,9 @@ def test_gather_paged_kv_with_chunk_indices_subset() -> None:
     # out_buffers[0] should contain chunk 0 (blocks 0,1) data
     # out_buffers[1] should contain chunk 2 (blocks 4,5) data
     # Verify by independently gathering all chunks and comparing
-    all_chunks = gather_paged_kv_to_cpu(source, [0, 1, 2, 3, 4, 5], blocks_per_chunk)
+    all_chunks = gather_paged_kv_to_cpu(
+        source, [0, 1, 2, 3, 4, 5], blocks_per_chunk, layout_hints={"kv_layout": "NHD"}
+    )
     torch_dev.synchronize()
 
     assert torch.allclose(out_buffers[0], all_chunks[0])
