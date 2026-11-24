@@ -198,6 +198,14 @@ it. Report both the failing run (step 5) and the passing run (step 6) in chat.
 
 ### CUDA nightly wheel provenance
 
+Current vLLM (after vllm-project/vllm#63830) removes the deprecated
+`--mamba-cache-mode` option and replaces `MambaManager.Params.mamba_cache_mode`
+with `enable_prefix_caching`. Check both the real manager constructor and
+CLI when upgrading the nightly. Keep snapshot selection, one-block restore
+windows and boundary-state tracking enabled for prefix-caching Mamba groups;
+attention-only prefix caching must not be classified as Mamba. Build layout
+fixtures with the runtime's real parameter type instead of skipping them.
+
 Select a CUDA nightly from its official index before resolving dependencies.
 A broad `>=0.0.0.dev0` constraint with `unsafe-best-match` can select PyPI's
 stable 0.34.0 over a newer-source 0.34.0rc1.dev build. Keep the selected exact

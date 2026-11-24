@@ -11,6 +11,8 @@ import torch
 from lmcache.integration.vllm.kv_cache_groups import (
     create_engine_group_infos_from_vllm,
     get_tokens_per_block,
+    group_mamba_cache_mode,
+    is_align_mode_mamba_group,
     is_scratch_spec,
 )
 from lmcache.v1.common.group_view import (
@@ -543,7 +545,14 @@ class KVCacheGroup:
         return tuple(self.kv_cache_specs.values())
 
 
-def test_conversion_reads_kv_cache_group_manager_config() -> None:
+@pytest.mark.parametrize(
+    "mamba_params",
+    [
+        SimpleNamespace(mamba_cache_mode="align"),
+        SimpleNamespace(enable_prefix_caching=True),
+    ],
+)
+def test_conversion_reads_kv_cache_group_manager_config(mamba_params: object) -> None:
     """The window, the Mamba mode and scratch groups come from the manager
     config; the spec's own Mamba mode is ignored."""
     groups = [
@@ -558,7 +567,7 @@ def test_conversion_reads_kv_cache_group_manager_config() -> None:
             {"layer.2": MambaSpec(16, mamba_cache_mode="none")},
             MambaManager,
             16,
-            SimpleNamespace(mamba_cache_mode="align"),
+            mamba_params,
             dcp_sharded=False,
         ),
         KVCacheGroup(
@@ -580,6 +589,20 @@ def test_conversion_reads_kv_cache_group_manager_config() -> None:
     assert [g.sw_size_tokens for g in spec] == [-1, 64, 16]
     assert [g.tokens_per_block for g in spec] == [32, 32, 16]
     assert [g.recurrent_state for g in spec] == [False, False, True]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_mamba_prefix_caching_flag_selects_snapshot_policy(enabled: bool) -> None:
+    """Current manager flags control boundary-state handling, not spec defaults."""
+    spec = MambaSpec(16)
+    group = KVCacheGroup(
+        {"layer.0": spec},
+        MambaManager,
+        16,
+        SimpleNamespace(enable_prefix_caching=enabled),
+    )
+    assert group_mamba_cache_mode(group, spec) == ("align" if enabled else "none")
+    assert is_align_mode_mamba_group(group) is enabled
 
 
 @dataclass

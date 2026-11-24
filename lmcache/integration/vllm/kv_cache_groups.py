@@ -202,10 +202,21 @@ def _is_mamba_spec(spec: Any) -> bool:
 
 
 def group_mamba_cache_mode(group: Any, spec: Any) -> str:
-    """Return the Mamba cache mode set for one layer, ``"none"`` if unset."""
+    """Return the layer's snapshot mode across vLLM's Mamba policy APIs.
+
+    New vLLM replaces ``mamba_cache_mode="align"`` with the manager's
+    ``enable_prefix_caching=True``. Legacy explicit modes keep precedence.
+    """
     config = _manager_config(group)
     if config is not None:
-        return getattr(config.params, "mamba_cache_mode", "none")
+        mode = getattr(config.params, "mamba_cache_mode", None)
+        if mode is not None:
+            return mode
+        return (
+            "align"
+            if getattr(config.params, "enable_prefix_caching", False)
+            else "none"
+        )
     return getattr(spec, "mamba_cache_mode", "none")
 
 
