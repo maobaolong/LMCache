@@ -183,6 +183,11 @@ A broad `>=0.0.0.dev0` constraint with `unsafe-best-match` can select PyPI's
 stable 0.34.0 over a newer-source 0.34.0rc1.dev build. Keep the selected exact
 version, full source SHA and immutable CUDA archive together.
 
+Use full 40-character commit SHAs when creating manual Buildkite builds for
+operations-only branches. The PR checkout fetches the PR head from upstream;
+a short SHA belonging only to a fork branch may not be fetched and then fails
+with `pathspec ... did not match` before pipeline upload (unit build 16590).
+
 Buildkite's Kubernetes command phase uses `/bin/sh`. Wrap multiline canary
 commands that source Bash helpers in `bash -euo pipefail` (as the SGLang
 canary does), and test the uploaded command through a POSIX shell. A Bash
