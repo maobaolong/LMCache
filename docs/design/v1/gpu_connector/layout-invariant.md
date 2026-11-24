@@ -22,6 +22,13 @@ For vLLM, `vllm_layout_hints(vllm_config)` reads the resolved layout from
 stays in the vLLM integration adapter; common discovery does not inspect the
 host's device type or apply a CPU/GPU default.
 
+The vLLM hint builder must return a valid `kv_layout` or fail before
+registration. The worker adapter fills missing layout metadata from the
+ambient engine configuration, even when the caller passes an empty or partial
+hint dictionary. Explicit layouts take precedence and do not query vLLM.
+Registration saves a copy of the resolved hints, so later caller mutations and
+changes to the ambient configuration cannot change recovery registration.
+
 The hint is required for vLLM's rank-4 fused and rank-5 split per-layer caches:
 shape and stride do not identify which axis means heads and which means block
 tokens. Missing or unsupported hints raise `ValueError` for those layouts.

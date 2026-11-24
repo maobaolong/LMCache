@@ -17,12 +17,9 @@ import torch
 # First Party
 from lmcache import torch_device_type
 from lmcache.utils import get_size_bytes as get_size_bytes
-from lmcache.v1.common.kv_format.types import KVLayoutName
+from lmcache.v1.common.kv_format.detectors.vllm import resolve_vllm_kv_layout
+from lmcache.v1.common.kv_format.types import KVLayoutName, LayoutHints
 from lmcache.v1.common.logging import init_logger
-
-if TYPE_CHECKING:
-    # First Party
-    from lmcache.v1.common.utils import LayoutHints
 
 logger = init_logger(__name__)
 ENGINE_NAME = "vllm-instance"
@@ -33,13 +30,37 @@ def is_false(value: str) -> bool:
     return value.lower() in ("false", "0", "no", "n", "off")
 
 
-def vllm_layout_hints(vllm_config: "VllmConfig | None" = None) -> "LayoutHints":
-    """Build layout_hints dict by querying vLLM at runtime."""
-    hints: dict[str, str] = {}
-    kv_layout = try_get_vllm_kv_cache_layout(vllm_config)
-    if kv_layout is not None:
+def vllm_layout_hints(
+    vllm_config: "VllmConfig | None" = None,
+    *,
+    layout_hints: LayoutHints | None = None,
+) -> LayoutHints:
+    """Build registration hints containing a valid vLLM KV-cache layout.
+
+    Args:
+        vllm_config: Engine config queried when ``kv_layout`` is missing.
+            If omitted, query the ambient vLLM config at registration time.
+        layout_hints: Optional engine metadata. An explicit ``kv_layout``
+            takes precedence and avoids querying vLLM; other keys are preserved.
+
+    Returns:
+        An independent copy containing the validated ``kv_layout``.
+
+    Raises:
+        ValueError: If the layout is unavailable, unresolved, or invalid.
+        NotImplementedError: If vLLM resolves a layout LMCache cannot transfer.
+    """
+    hints: LayoutHints = layout_hints.copy() if layout_hints is not None else {}
+    if hints.get("kv_layout") is None:
+        kv_layout = try_get_vllm_kv_cache_layout(vllm_config)
+        if kv_layout is None:
+            raise ValueError(
+                "Cannot determine vLLM KV cache layout; register after vLLM "
+                "resolves its layout or pass explicit layout_hints['kv_layout']."
+            )
         hints["kv_layout"] = kv_layout
-    return hints  # type: ignore[return-value]
+    resolve_vllm_kv_layout(hints)
+    return hints
 
 
 def translate_vllm_kv_cache_layout(kv_cache_layout: str) -> KVLayoutName:

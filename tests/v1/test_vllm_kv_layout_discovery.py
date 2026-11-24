@@ -22,6 +22,7 @@ from lmcache.integration.vllm.utils import (
     vllm_layout_hints,
 )
 from lmcache.v1.client.transfer_context.base import compute_kv_layout
+from lmcache.v1.common.kv_format.types import LayoutHints
 import lmcache.lmcache_native as lmcache_native
 
 UNSUPPORTED_LAYOUTS = ("LHBNC", "BHLNC")
@@ -165,6 +166,30 @@ class TestTryGetVllmKVCacheLayout:
 
 
 class TestVllmLayoutHints:
+    def test_unavailable_engine_cannot_produce_empty_hints(self, monkeypatch) -> None:
+        monkeypatch.setitem(sys.modules, "vllm.config", None)
+        with pytest.raises(ValueError, match="Cannot determine.*layout"):
+            vllm_layout_hints()
+
+    def test_partial_hints_are_completed_from_engine(self) -> None:
+        hints: LayoutHints = {"num_kv_heads": 4}
+        assert vllm_layout_hints(make_vllm_config("LBHNC"), layout_hints=hints) == {
+            "num_kv_heads": 4,
+            "kv_layout": "HND",
+        }
+        assert hints == {"num_kv_heads": 4}
+
+    def test_explicit_layout_needs_no_ambient_engine(self, monkeypatch) -> None:
+        monkeypatch.setitem(sys.modules, "vllm.config", None)
+        hints: LayoutHints = {"kv_layout": "NHD", "num_kv_heads": 4}
+        result = vllm_layout_hints(layout_hints=hints)
+        assert result == hints
+        assert result is not hints
+
+    def test_invalid_explicit_layout_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="INVALID"):
+            vllm_layout_hints(layout_hints={"kv_layout": "INVALID"})  # type: ignore[typeddict-item]
+
     @pytest.mark.parametrize(
         ("resolved_layout", "expected_format"),
         [

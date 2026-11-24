@@ -1553,15 +1553,19 @@ class LMCacheMPWorkerAdapter:
             kv_caches: A dict of kv caches to register. The keys are the
                 layer names and the values are the corresponding tensors.
             engine_group_infos: LMCache-owned engine KV cache group metadata.
-            layout_hints: Engine layout hints forwarded to the server; built
-                here from the ambient vLLM config when not provided.
+            layout_hints: Engine layout hints forwarded to the server. A missing
+                ``kv_layout`` is resolved from the ambient vLLM config, including
+                when hints are empty or partial. A validated copy is saved for
+                recovery registration.
 
         Raises:
             ConnectionError: if the server does not respond within
                 mq_timeout.
             ValueError: if the LMCache chunk size is not a multiple of an
                 engine group's ``tokens_per_block`` (chunk boundaries would
-                not align with that group's paged-chunk boundaries).
+                not align with that group's paged-chunk boundaries), or the
+                layout is unavailable, unresolved, or invalid.
+            NotImplementedError: if vLLM resolves an unsupported layout.
         """
         logger.info("Registering kv caches")
         for info in engine_group_infos:
@@ -1574,12 +1578,11 @@ class LMCacheMPWorkerAdapter:
                     f"multiple of engine group {info.engine_group_id} "
                     f"tokens_per_block {info.tokens_per_block}"
                 )
+        resolved_hints = vllm_layout_hints(layout_hints=layout_hints)
         self.kv_caches = kv_caches
         self.engine_group_infos = list(engine_group_infos)
         # Reused when heartbeat recovery re-registers.
-        self._layout_hints = (
-            layout_hints if layout_hints is not None else vllm_layout_hints()
-        )
+        self._layout_hints = resolved_hints
         self._send_register_kv_caches_request(kv_caches)
 
     def unregister_kv_caches(self) -> None:

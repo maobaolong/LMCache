@@ -6,11 +6,13 @@ recovery: multiprocess ``workloads/common/restart-recovery.sh``."""
 # Standard
 from contextlib import nullcontext
 from dataclasses import replace
+from types import ModuleType, SimpleNamespace
 from typing import Any, Callable, ClassVar, cast
 from unittest.mock import MagicMock
 import gc
 import os
 import queue
+import sys
 import threading
 import time
 import weakref
@@ -37,6 +39,7 @@ from lmcache.v1.common.custom_types import (
     KVEventRecord,
 )
 from lmcache.v1.common.group_view import EngineGroupInfo
+from lmcache.v1.common.kv_format.types import LayoutHints
 from lmcache.v1.common.token_codec import pack_token_ids
 from lmcache.v1.platform.ipc_policy import (
     is_isolated_ipc,
@@ -413,16 +416,80 @@ def fake_adapter(monkeypatch):
         "kv_wrapper_fds_delivered",
         lambda wrappers, fd_channel_path, timeout: nullcontext(),
     )
-    # The registration fixture represents NHD caches, independently of the host.
-    monkeypatch.setattr(
-        adapter_mod,
-        "vllm_layout_hints",
-        lambda: {"kv_layout": "NHD"},
+    # Stub engine configuration, keeping the hint producer and registration real.
+    config = ModuleType("vllm.config")
+    config.get_current_vllm_config = lambda: SimpleNamespace(  # type: ignore[attr-defined]
+        cache_config=SimpleNamespace(
+            get_resolved_kv_cache_layout=lambda: SimpleNamespace(name="LBNHC")
+        )
     )
+    monkeypatch.setitem(sys.modules, "vllm.config", config)
 
     adapter = _make_worker_adapter()
     req_client.reset_mock()
     return adapter, req_client, future
+
+
+@pytest.mark.parametrize("layout", ["LBNHC", "LBHNC"])
+@pytest.mark.parametrize("hints", [None, {}, {"num_kv_heads": 4}])
+def test_registration_completes_layout_from_engine(
+    fake_adapter: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+    layout: str,
+    hints: LayoutHints | None,
+) -> None:
+    """Missing metadata is resolved by the real producer before the server RPC."""
+    adapter, client, _future = fake_adapter
+    config = SimpleNamespace(
+        cache_config=SimpleNamespace(
+            get_resolved_kv_cache_layout=lambda: SimpleNamespace(name=layout)
+        )
+    )
+    monkeypatch.setattr(
+        sys.modules["vllm.config"], "get_current_vllm_config", lambda: config
+    )
+
+    adapter.register_kv_caches(_cuda_kv_caches(), layout_hints=hints)
+
+    expected = dict(hints or {})
+    expected["kv_layout"] = "NHD" if layout == "LBNHC" else "HND"
+    assert client.register_kv_cache.call_args.args[5] == expected
+
+
+def test_registration_without_layout_fails_before_state_or_rpc(
+    fake_adapter: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unavailable engine cannot leave a partially registered worker."""
+    adapter, client, _future = fake_adapter
+    monkeypatch.setitem(sys.modules, "vllm.config", None)
+    contexts = _patch_transfer_context_factory(monkeypatch)
+
+    with pytest.raises(ValueError, match="Cannot determine.*layout"):
+        adapter.register_kv_caches(_cuda_kv_caches(), layout_hints={})
+
+    assert adapter.kv_caches == {}
+    assert contexts == []
+    client.register_kv_cache.assert_not_called()
+
+
+def test_restore_preserves_registration_layout(
+    fake_adapter: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caller mutations and absent ambient config cannot alter restore metadata."""
+    adapter, client, _future = fake_adapter
+    hints: LayoutHints = {"kv_layout": "HND", "num_kv_heads": 4}
+    adapter.register_kv_caches(_cuda_kv_caches(), layout_hints=hints)
+    hints["kv_layout"] = "NHD"
+    adapter.unregister_kv_caches()
+    monkeypatch.setitem(sys.modules, "vllm.config", None)
+
+    adapter.restore_kv_caches()
+
+    assert client.register_kv_cache.call_count == 2
+    assert all(
+        call.args[5] == {"kv_layout": "HND", "num_kv_heads": 4}
+        for call in client.register_kv_cache.call_args_list
+    )
 
 
 def test_scheduler_reset_cache_clears_every_server_without_force(
@@ -827,12 +894,6 @@ def test_register_kv_caches_cpu_submits_engine_driven_context_registration(
         "lmcache.v1.client.worker_transfer._supports_async_primitives",
         lambda: False,
     )
-    monkeypatch.setattr(
-        adapter_mod,
-        "vllm_layout_hints",
-        lambda: {"kv_layout": "NHD"},
-        raising=False,
-    )
     cpu_kv = {"layer.0": torch.randn(2, 8, 4, 2, 8)}
 
     adapter.register_kv_caches(cpu_kv)
@@ -851,12 +912,6 @@ def test_register_kv_caches_tuple_caches_use_engine_driven_context(
     monkeypatch.setattr(
         "lmcache.v1.client.worker_transfer._supports_async_primitives",
         lambda: False,
-    )
-    monkeypatch.setattr(
-        adapter_mod,
-        "vllm_layout_hints",
-        lambda: {"kv_layout": "NHD"},
-        raising=False,
     )
     # NL_X_TWO_X_NB_BS_NH_HS layout: [NB, BS, NH, HS] per plane.
     k = torch.randn(2, 8, 4, 8)
@@ -1699,7 +1754,9 @@ def test_register_uses_local_context_when_self_transfer_ctx_nulled(
         "kv_wrapper_fds_delivered",
         lambda wrappers, fd_channel_path, timeout: nullcontext(),
     )
-    monkeypatch.setattr(adapter_mod, "vllm_layout_hints", lambda: {})
+    monkeypatch.setattr(
+        adapter_mod, "vllm_layout_hints", lambda **kwargs: {"kv_layout": "NHD"}
+    )
     local_ctx = MagicMock(name="local_transfer_ctx")
     monkeypatch.setattr(
         adapter_mod, "create_transfer_context", lambda kv, **_kwargs: local_ctx

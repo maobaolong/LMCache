@@ -61,7 +61,11 @@ def _config(transfer_config: KVTransferConfig) -> VllmConfig:
             parallel_config=SimpleNamespace(
                 world_size=1, rank=0, tensor_parallel_size=1, pipeline_parallel_size=1
             ),
-            cache_config=SimpleNamespace(block_size=4, enable_prefix_caching=True),
+            cache_config=SimpleNamespace(
+                block_size=4,
+                enable_prefix_caching=True,
+                get_resolved_kv_cache_layout=lambda: SimpleNamespace(name="LBNHC"),
+            ),
             scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=True),
             kv_transfer_config=transfer_config,
         ),
@@ -148,7 +152,6 @@ def mock_io(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         connector_mod, "LMCacheMPSchedulerAdapter", lambda **kw: scheduler
     )
     monkeypatch.setattr(connector_mod, "print_banner_once", MagicMock())
-    monkeypatch.setattr(connector_mod, "vllm_layout_hints", lambda config: {})
     monkeypatch.setattr(adapter_mod.RequestClientFactory, "create", MagicMock())
     monkeypatch.setattr(adapter_mod, "get_lmcache_chunk_size", lambda *a, **kw: 4)
     monkeypatch.setattr(adapter_mod, "get_experimental", lambda *a, **kw: set())
@@ -195,6 +198,17 @@ def connectors(
     finally:
         worker.shutdown()
         scheduler.shutdown()
+
+
+def test_registration_forwards_resolved_engine_layout(
+    connectors: tuple[LMCacheMPConnector, LMCacheMPConnector],
+    mock_io: SimpleNamespace,
+) -> None:
+    """The real connector and hint builder carry CacheConfig layout to transfer."""
+    mock_io.transfer.register.assert_called_once()
+    assert mock_io.transfer.register.call_args.kwargs["layout_hints"] == {
+        "kv_layout": "NHD"
+    }
 
 
 @pytest.mark.parametrize("save_decode_cache", [None, False, True])
