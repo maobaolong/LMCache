@@ -27,17 +27,7 @@ logger = init_logger(__name__)
 
 
 def resolve_vllm_kv_layout(layout_hints: LayoutHints) -> KVLayoutName:
-    """Validate the engine's layout hint.
-
-    Args:
-        layout_hints: Registration metadata containing ``kv_layout``.
-
-    Returns:
-        The supported layout name.
-
-    Raises:
-        ValueError: If ``kv_layout`` is absent or unsupported.
-    """
+    """Return ``kv_layout``; raise ``ValueError`` if missing or unsupported."""
     kv_layout = layout_hints.get("kv_layout")
     if kv_layout is None:
         raise ValueError(
@@ -66,10 +56,7 @@ class VLLM_Detector(EngineDetector):
         kv_caches: DiscoverableKVCache,
         layout_hints: LayoutHints,
     ) -> "tuple[Optional[lmcache_native.EngineKVFormat], DiscoverableKVCache]":
-        """Detect the format from structure and hints.
-
-        Fused rank-4 and split rank-5 caches require ``kv_layout``.
-        """
+        """Detect the format from cache structure and layout hints."""
         # Fused K/V is the only rank-4 vLLM layout, so its raw rank
         # identifies it unambiguously (a 5-D split would collide with
         # flash-infer when num_heads == 2). The two middle axes are NH/BS

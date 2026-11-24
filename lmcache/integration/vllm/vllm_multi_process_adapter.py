@@ -1560,7 +1560,7 @@ class LMCacheMPWorkerAdapter:
             ConnectionError: if the server does not respond within
                 mq_timeout.
             ValueError: if the chunk size does not align with an engine group's
-                ``tokens_per_block``, or the layout is unavailable or invalid.
+                ``tokens_per_block``, or the layout is unresolved or invalid.
             NotImplementedError: if vLLM resolves an unsupported layout.
         """
         logger.info("Registering kv caches")

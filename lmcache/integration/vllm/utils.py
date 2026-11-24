@@ -35,27 +35,15 @@ def vllm_layout_hints(
     *,
     layout_hints: LayoutHints | None = None,
 ) -> LayoutHints:
-    """Fill missing vLLM layout metadata and return a validated copy.
+    """Return copied hints with the engine layout or its legacy device default.
 
-    Args:
-        vllm_config: Config to query; defaults to the current vLLM config.
-        layout_hints: Existing hints. An explicit ``kv_layout`` takes precedence.
-
-    Returns:
-        A copy with ``kv_layout`` set and other hints preserved.
-
-    Raises:
-        ValueError: If the layout is unavailable, unresolved, or invalid.
-        NotImplementedError: If vLLM resolves a layout LMCache cannot transfer.
+    Explicit hints take precedence. Invalid or unsupported layouts still raise.
     """
     hints: LayoutHints = layout_hints.copy() if layout_hints is not None else {}
     if hints.get("kv_layout") is None:
         kv_layout = try_get_vllm_kv_cache_layout(vllm_config)
         if kv_layout is None:
-            raise ValueError(
-                "Cannot determine vLLM KV cache layout; register after vLLM "
-                "resolves its layout or pass explicit layout_hints['kv_layout']."
-            )
+            kv_layout = "HND" if torch_device_type == "cpu" else "NHD"
         hints["kv_layout"] = kv_layout
     resolve_vllm_kv_layout(hints)
     return hints

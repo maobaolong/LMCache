@@ -166,10 +166,30 @@ class TestTryGetVllmKVCacheLayout:
 
 
 class TestVllmLayoutHints:
-    def test_unavailable_engine_cannot_produce_empty_hints(self, monkeypatch) -> None:
-        monkeypatch.setitem(sys.modules, "vllm.config", None)
-        with pytest.raises(ValueError, match="Cannot determine.*layout"):
-            vllm_layout_hints()
+    @pytest.mark.parametrize(("device", "expected"), [("cpu", "HND"), ("cuda", "NHD")])
+    @pytest.mark.parametrize("missing_config", [False, True])
+    def test_unavailable_layout_preserves_legacy_default(
+        self, monkeypatch, device: str, expected: str, missing_config: bool
+    ) -> None:
+        monkeypatch.setattr("lmcache.integration.vllm.utils.torch_device_type", device)
+        if missing_config:
+            monkeypatch.setitem(sys.modules, "vllm.config", None)
+            config = None
+        else:
+            config = SimpleNamespace(cache_config=LegacyCacheConfig())
+            monkeypatch.setitem(sys.modules, "vllm.v1.attention.backends.utils", None)
+
+        hints = vllm_layout_hints(config)
+
+        assert hints == {"kv_layout": expected}
+        caches = {"layer": torch.zeros(7, 4, 4, 16, dtype=torch.float16)}
+        metadata = compute_kv_layout(caches, layout_hints=hints)
+        fmt = (
+            lmcache_native.EngineKVFormat.NL_X_NB_NH_BS_CS
+            if device == "cpu"
+            else lmcache_native.EngineKVFormat.NL_X_NB_BS_NH_CS
+        )
+        assert metadata[4] == fmt
 
     def test_partial_hints_are_completed_from_engine(self) -> None:
         hints: LayoutHints = {"num_kv_heads": 4}

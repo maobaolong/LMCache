@@ -456,20 +456,30 @@ def test_registration_completes_layout_from_engine(
     assert client.register_kv_cache.call_args.args[5] == expected
 
 
-def test_registration_without_layout_fails_before_state_or_rpc(
-    fake_adapter: tuple, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(("device", "layout"), [("cpu", "HND"), ("cuda", "NHD")])
+@pytest.mark.parametrize("hints", [None, {}, {"num_kv_heads": 4}])
+def test_registration_forwards_legacy_layout_default(
+    fake_adapter: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    layout: str,
+    hints: LayoutHints | None,
 ) -> None:
-    """Missing layout metadata fails before registration."""
     adapter, client, _future = fake_adapter
     monkeypatch.setitem(sys.modules, "vllm.config", None)
-    contexts = _patch_transfer_context_factory(monkeypatch)
+    monkeypatch.setattr("lmcache.integration.vllm.utils.torch_device_type", device)
 
-    with pytest.raises(ValueError, match="Cannot determine.*layout"):
-        adapter.register_kv_caches(_cuda_kv_caches(), layout_hints={})
+    adapter.register_kv_caches(_cuda_kv_caches(), layout_hints=hints)
+    adapter.unregister_kv_caches()
+    monkeypatch.setattr("lmcache.integration.vllm.utils.torch_device_type", "changed")
+    adapter.restore_kv_caches()
 
-    assert adapter.kv_caches == {}
-    assert contexts == []
-    client.register_kv_cache.assert_not_called()
+    expected = dict(hints or {})
+    expected["kv_layout"] = layout
+    assert client.register_kv_cache.call_count == 2
+    assert all(
+        call.args[5] == expected for call in client.register_kv_cache.call_args_list
+    )
 
 
 def test_restore_preserves_registration_layout(

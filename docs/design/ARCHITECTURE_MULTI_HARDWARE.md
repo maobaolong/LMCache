@@ -212,12 +212,8 @@ server smoke tests on a CPU-only host) and CLI loading without torch. In
 MP mode, CPU workers use `EngineDrivenTransferContext` (inline or SHM
 backend) for KV transfer; there is no GPU-side connector involved.
 
-`normalize_kv_and_discover_format` consumes engine-provided `kv_layout` hints
-for ambiguous per-layer layouts and does not inspect the host device. The
-vLLM integration obtains the resolved layout at registration time; its existing
-legacy compatibility handles older backends whose generic layout query differs
-from the physical allocation. Missing hints for ambiguous layouts raise
-`ValueError` instead of selecting a device-dependent default.
+`normalize_kv_and_discover_format` reads `kv_layout` from engine hints.
+The vLLM integration supplies the layout, including the legacy CPU HND default.
 
 ## Adding New Hardware
 

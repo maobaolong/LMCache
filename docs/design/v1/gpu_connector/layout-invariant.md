@@ -14,29 +14,6 @@ HND vs NHD, MLA vs MHA, per-layer vs cross-layer. All of that is
 encoded in `EngineKVFormat`; downstream code must never re-derive it
 from raw shapes.
 
-## Engine-provided layout
-
-An engine adapter supplies `layout_hints["kv_layout"]` at registration time.
-For vLLM, `vllm_layout_hints(vllm_config)` reads the resolved layout from
-`CacheConfig` when that API is available. Existing legacy-vLLM compatibility
-stays in the vLLM integration adapter; common discovery does not inspect the
-host's device type or apply a CPU/GPU default.
-
-The vLLM hint builder must return a valid `kv_layout` or fail before
-registration. The worker adapter fills missing layout metadata from the
-ambient engine configuration, even when the caller passes an empty or partial
-hint dictionary. Explicit layouts take precedence and do not query vLLM.
-Registration saves a copy of the resolved hints, so later caller mutations and
-changes to the ambient configuration cannot change recovery registration.
-
-The hint is required for vLLM's rank-4 fused and rank-5 split per-layer caches:
-shape and stride do not identify which axis means heads and which means block
-tokens. Missing or unsupported hints raise `ValueError` for those layouts.
-Callers that previously omitted the hint must provide the actual layout, for
-example `{"kv_layout": "NHD"}` for heads after block tokens. Structure-only
-formats such as MLA, cross-layer caches, plane tuples, and the 6-D RBLN layouts
-remain discoverable without a hint.
-
 ## Canonical type
 
 ```python
