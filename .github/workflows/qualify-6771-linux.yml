@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
           repository: maobaolong/LMCache
-          ref: fd8ab7b9fb93cd05d79e3b05a7b7cc4aff1e1a58
+          ref: 72ebe5f3e785706acc664416994d18b1e39b4033
           fetch-depth: 0
       - name: Set up the same Python versions as upstream code quality
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
@@ -27,7 +27,7 @@ jobs:
             3.12
       - name: Verify source and toolchain prerequisites
         run: |
-          test "$(git rev-parse HEAD)" = fd8ab7b9fb93cd05d79e3b05a7b7cc4aff1e1a58
+          test "$(git rev-parse HEAD)" = 72ebe5f3e785706acc664416994d18b1e39b4033
           python --version
           python3.12 --version
           cargo --version
@@ -41,6 +41,18 @@ jobs:
         run: |
           python3.12 -m venv /tmp/pr6771-metadata
           . /tmp/pr6771-metadata/bin/activate
-          python -m pip install pytest PyYAML
+          python -m pip install pytest PyYAML uv==0.13.6
           python -m pytest --confcutdir=tests/ci \
-            tests/ci/test_runtime_image_pins.py tests/ci/test_cpu_nightly.py -q
+            tests/ci/test_runtime_image_pins.py tests/ci/test_cpu_nightly.py \
+            tests/ci/test_vllm_nightly_selection.py -q
+          python .buildkite/k3_harness/select-vllm-nightly.py \
+            https://wheels.vllm.ai/nightly/cu132/vllm/ cu132 > /tmp/nightly-record.tsv
+          IFS=$'\t' read -r version source archive < /tmp/nightly-record.tsv
+          cat /tmp/nightly-record.tsv
+          printf 'vllm[runai,tensorizer,flashinfer]==%s\n' "$version" > /tmp/nightly.in
+          uv pip compile /tmp/nightly.in --python-version 3.12 \
+            --extra-index-url "$archive" \
+            --extra-index-url https://wheels.vllm.ai/nightly/cu132 \
+            --extra-index-url https://download.pytorch.org/whl/cu130 \
+            --index-strategy unsafe-best-match -o /tmp/nightly-resolved.txt
+          grep -Fx "vllm==$version" /tmp/nightly-resolved.txt
