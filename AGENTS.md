@@ -405,3 +405,10 @@ Buildkite artifact listings are paginated. When collecting promotion evidence,
 use the exact job endpoint with `path=<filename>&state=finished`, and reject
 missing or duplicate matches. A unit job uploads many coverage files, so its
 JUnit report need not appear on the default first page.
+
+On macOS, verify HTTPS trust before using a Python environment to download
+qualification artifacts. A Homebrew Python 3.12 environment rejected the
+Buildkite certificate chain while the platform interpreter succeeded. Configure
+the appropriate trusted CA bundle, or use a verified platform interpreter when
+the operator script supports it. Keep Python 3.12 first for repository tests and
+pre-commit; do not disable TLS certificate verification to work around trust.
