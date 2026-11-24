@@ -26,11 +26,26 @@ mkdir -p "${LMCACHE_TEST_TMPDIR}"
 trap 'rm -rf "${LMCACHE_TEST_TMPDIR}" 2>/dev/null || true' EXIT
 
 # ── Environment setup ────────────────────────────────────────
-source .buildkite/k3_harness/setup-lmcache-only-env.sh
+source .buildkite/k3_harness/setup-env.sh
 uv pip install -r requirements/test.txt
 # Generated gRPC bindings are intentionally not tracked. Generate them only
 # after the test dependencies have installed grpcio-tools.
 python lmcache/v1/transport/grpc/_proto_gen/_generate.py
+
+python - <<'PY'
+import importlib.metadata
+import os
+
+import vllm
+from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorBase_V1
+
+expected = os.environ["PINNED_VLLM_VERSION"]
+if importlib.metadata.version("vllm") != expected or vllm.__version__ != expected:
+    raise SystemExit("Nightly qualification requires the exact selected runtime")
+if not hasattr(KVConnectorBase_V1, "on_kv_cache_ready"):
+    raise SystemExit("Selected runtime lacks the startup-ready callback")
+print("Nightly full units use", vllm.__version__, "with startup-ready callback")
+PY
 
 # ── Run unit tests with coverage ─────────────────────────────
 # PR builds stop at the first failure for fast feedback. The weekly full build
