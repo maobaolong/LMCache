@@ -40,6 +40,17 @@ engine_configure_defaults() {
     export ENGINE_BASELINE_LOG_FILE="${ENGINE_BASELINE_LOG_FILE:-/tmp/build_${BUILD_ID:-local_$$}_vllm_baseline.log}"
 }
 
+engine_prepare_mamba_args() {
+    VLLM_MAMBA_ARGS=()
+    # New vLLM derives Mamba checkpointing from --enable-prefix-caching and
+    # has removed the deprecated --mamba-cache-mode CLI option.
+    local supports_mode
+    supports_mode=$(python3 -c 'from vllm.config import CacheConfig; print(int(hasattr(CacheConfig, "mamba_cache_mode")))') || return
+    if [[ "$supports_mode" == "1" ]]; then
+        VLLM_MAMBA_ARGS=(--mamba-cache-mode "$1")
+    fi
+}
+
 engine_prepare_launch() {
     local device_index="$1"
     local gpu_memory_gb=0
@@ -91,7 +102,7 @@ PY
         echo "Disabling vLLM prefix caching via --no-enable-prefix-caching"
         VLLM_PREFIX_ARGS=(--no-enable-prefix-caching)
     elif [[ -n "${MAMBA_CACHE_MODE:-}" ]]; then
-        VLLM_MAMBA_ARGS=(--mamba-cache-mode "$MAMBA_CACHE_MODE")
+        engine_prepare_mamba_args "$MAMBA_CACHE_MODE"
         VLLM_PREFIX_ARGS=(--enable-prefix-caching)
     fi
 

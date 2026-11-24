@@ -98,6 +98,7 @@ echo ""
 launch_vllm() {
     local log_file="$1"
     local vmm_config=""
+    engine_prepare_mamba_args align
     if [[ "${VLLM_TARGET_DEVICE:-}" == "xpu" ]]; then
         vmm_config=', "lmcache.mp.use_vmm_api": false'
     fi
@@ -115,7 +116,7 @@ launch_vllm() {
         --no-enable-flashinfer-autotune \
         --enable-prefix-caching \
         --moe-backend triton \
-        --mamba-cache-mode align \
+        "${VLLM_MAMBA_ARGS[@]}" \
         --max-model-len auto \
         --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
         --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \

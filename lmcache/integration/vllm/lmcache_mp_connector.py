@@ -422,6 +422,25 @@ def get_resolved_attention_block_sizes(
     return {vllm_config.cache_config.block_size}
 
 
+def _mamba_cache_mode(
+    vllm_config: VllmConfig,
+    kv_cache_config: "KVCacheConfig | None",
+) -> str:
+    """Read legacy global modes or current per-group Mamba prefix caching.
+
+    Prefix caching alone also applies to attention-only models. Use resolved
+    Mamba groups to distinguish those when the legacy mode field is absent.
+    """
+    mode = getattr(vllm_config.cache_config, "mamba_cache_mode", None)
+    if mode is not None:
+        return mode
+    if kv_cache_config is not None and any(
+        is_align_mode_mamba_group(group) for group in kv_cache_config.kv_cache_groups
+    ):
+        return "align"
+    return "none"
+
+
 def validate_mamba_step_alignment(
     vllm_config: VllmConfig,
     kv_cache_config: "KVCacheConfig | None" = None,
@@ -453,7 +472,7 @@ def validate_mamba_step_alignment(
         ValueError: If Mamba groups have inconsistent block sizes or
             ``max_num_batched_tokens < block_size``.
     """
-    if getattr(vllm_config.cache_config, "mamba_cache_mode", "none") != "align":
+    if _mamba_cache_mode(vllm_config, kv_cache_config) != "align":
         return
     mamba_block_sizes = {
         spec.block_size
@@ -664,7 +683,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             vllm_config, kv_cache_config
         )
         self._prefix_replay_tokens = get_prefix_replay_tokens(kv_cache_config)
-        mamba_cache_mode = getattr(vllm_config.cache_config, "mamba_cache_mode", "none")
+        mamba_cache_mode = _mamba_cache_mode(vllm_config, kv_cache_config)
         self._reserve_last_token_for_lookup = mamba_cache_mode in ("align", "all")
         scheduler_block_size = get_vllm_scheduler_block_size(
             vllm_config, kv_cache_config
