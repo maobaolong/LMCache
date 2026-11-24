@@ -1,0 +1,46 @@
+name: Qualify PR6771 on Linux
+
+on:
+  push:
+    branches: [ci/qualify-6771-linux-20261124]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact PR6771 head
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          repository: maobaolong/LMCache
+          ref: fd8ab7b9fb93cd05d79e3b05a7b7cc4aff1e1a58
+          fetch-depth: 0
+      - name: Set up the same Python versions as upstream code quality
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
+        with:
+          python-version: |
+            3.12
+            3.13
+      - name: Verify source and toolchain prerequisites
+        run: |
+          test "$(git rev-parse HEAD)" = fd8ab7b9fb93cd05d79e3b05a7b7cc4aff1e1a58
+          python --version
+          python3.12 --version
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
+      - name: Run all upstream pre-commit checks, including Rust
+        uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd
+        with:
+          extra_args: --all-files
+      - name: Verify runtime-pin and CPU provenance contracts
+        run: |
+          python3.12 -m venv /tmp/pr6771-metadata
+          . /tmp/pr6771-metadata/bin/activate
+          python -m pip install pytest PyYAML
+          python -m pytest --confcutdir=tests/ci \
+            tests/ci/test_runtime_image_pins.py tests/ci/test_cpu_nightly.py -q
