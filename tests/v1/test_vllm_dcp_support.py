@@ -244,18 +244,36 @@ def test_scheduler_block_size_is_group_span_lcm():
 
 
 @requires_vllm
-def test_mamba_alignment_uses_resolved_page_not_cli_block_size():
+@pytest.mark.parametrize("legacy_global_mode", [False, True])
+def test_mamba_alignment_uses_resolved_page_not_cli_block_size(
+    legacy_global_mode: bool,
+):
     *_, validate_mamba_step_alignment = _import_connector_geometry_helpers()
     kv_config = _hybrid_kv_cache_config()
 
-    with pytest.raises(ValueError, match=r"block_size=2304"):
-        validate_mamba_step_alignment(
-            _geometry_config(max_num_batched_tokens=2048), kv_config
-        )
+    config = _geometry_config(max_num_batched_tokens=2048)
+    if not legacy_global_mode:
+        del config.cache_config.mamba_cache_mode
+        config.cache_config.enable_prefix_caching = True
 
-    validate_mamba_step_alignment(
-        _geometry_config(max_num_batched_tokens=4096), kv_config
+    with pytest.raises(ValueError, match=r"block_size=2304"):
+        validate_mamba_step_alignment(config, kv_config)
+
+    config.scheduler_config.max_num_batched_tokens = 4096
+    validate_mamba_step_alignment(config, kv_config)
+
+
+@requires_vllm
+def test_attention_prefix_caching_has_no_mamba_step_constraint():
+    """Removing the global Mamba mode must not classify attention as Mamba."""
+    *_, validate_mamba_step_alignment = _import_connector_geometry_helpers()
+    config = _geometry_config(max_num_batched_tokens=1)
+    del config.cache_config.mamba_cache_mode
+    config.cache_config.enable_prefix_caching = True
+    kv_config = SimpleNamespace(
+        kv_cache_groups=[SimpleNamespace(kv_cache_spec=_attention_spec(2304))]
     )
+    validate_mamba_step_alignment(config, kv_config)
 
 
 @requires_vllm
