@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
           repository: maobaolong/LMCache
-          ref: 72ebe5f3e785706acc664416994d18b1e39b4033
+          ref: c1eb5a630d2bfa26febd5d5c74dd47aa9cdccc02
           fetch-depth: 0
       - name: Set up the same Python versions as upstream code quality
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
@@ -27,7 +27,7 @@ jobs:
             3.12
       - name: Verify source and toolchain prerequisites
         run: |
-          test "$(git rev-parse HEAD)" = 72ebe5f3e785706acc664416994d18b1e39b4033
+          test "$(git rev-parse HEAD)" = c1eb5a630d2bfa26febd5d5c74dd47aa9cdccc02
           python --version
           python3.12 --version
           cargo --version
