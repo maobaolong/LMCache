@@ -11,6 +11,31 @@ Each subdirectory under `k3_tests/` is a self-contained test with these files:
 
 ## Buildkite Web UI Setup
 
+### CUDA vLLM nightly unit qualification
+
+Standard `unit/run.sh` installs LMCache without vLLM. For a real-nightly
+qualification at the exact PR commit, set these build environment inputs on
+the existing `k3-unit-tests` pipeline:
+
+```text
+VLLM_NIGHTLY_UNIT_TESTS=1
+USE_PINNED_VLLM=false
+PINNED_VLLM_VERSION=
+PINNED_VLLM_FULL_SHA=
+PINNED_VLLM_ARCHIVE_INDEX_URL=
+LMCACHE_PR_BASE_MERGE=never
+```
+
+This profile installs the official CUDA nightly through `setup-env.sh`, runs
+its real CUDA preflight, verifies the installed distribution/module version
+and startup-ready callback, and runs the full unit suite with JUnit reporting.
+It uses the existing GPU pod and leaves the default unit setup unchanged.
+For a frozen qualification, replace the three empty `PINNED_VLLM_*` inputs
+with the same version, full source SHA and immutable archive used by the
+canary. `USE_PINNED_VLLM=false` skips the shared pin, but preserves explicit
+coordinates. Promotion requires matching runtime coordinates in the unit and
+both transport qualifications.
+
 ### Prerequisites
 
 Before creating pipelines, make sure a queue named `k8s` exists in your Buildkite cluster. Go to **Organization Settings → Default cluster → Queues → New Queue** and create it. The queue needs no configuration and no agents — agent-stack-k8s creates ephemeral pod-based agents automatically when jobs arrive.

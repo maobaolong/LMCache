@@ -188,6 +188,7 @@ def test_real_vllm_request_packs_tokens_after_streaming_session_update():
     scheduler.max_model_len = 32
     scheduler.num_sampled_tokens_per_step = 1
     scheduler.log_stats = False
+    scheduler.collect_stats = False
     scheduler.num_waiting_for_streaming_input = 0
     scheduler._update_request_as_session(session, update)
 

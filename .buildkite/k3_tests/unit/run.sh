@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit test entrypoint for K8s pods.
-# Installs LMCache (no vLLM) + test deps, then runs pytest with coverage.
+# Installs LMCache + test deps, optionally qualifying a real vLLM nightly.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,18 +26,39 @@ mkdir -p "${LMCACHE_TEST_TMPDIR}"
 trap 'rm -rf "${LMCACHE_TEST_TMPDIR}" 2>/dev/null || true' EXIT
 
 # ── Environment setup ────────────────────────────────────────
-source .buildkite/k3_harness/setup-lmcache-only-env.sh
+if [[ "${VLLM_NIGHTLY_UNIT_TESTS:-0}" == "1" ]]; then
+    source .buildkite/k3_harness/setup-env.sh
+else
+    source .buildkite/k3_harness/setup-lmcache-only-env.sh
+fi
 uv pip install -r requirements/test.txt
 # Generated gRPC bindings are intentionally not tracked. Generate them only
 # after the test dependencies have installed grpcio-tools.
 python lmcache/v1/transport/grpc/_proto_gen/_generate.py
+
+if [[ "${VLLM_NIGHTLY_UNIT_TESTS:-0}" == "1" ]]; then
+    python - <<'PY'
+import importlib.metadata
+import os
+
+import vllm
+from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorBase_V1
+
+expected = os.environ["PINNED_VLLM_VERSION"]
+if importlib.metadata.version("vllm") != expected or vllm.__version__ != expected:
+    raise SystemExit("Nightly qualification requires the exact selected runtime")
+if not hasattr(KVConnectorBase_V1, "on_kv_cache_ready"):
+    raise SystemExit("Selected runtime lacks the startup-ready callback")
+print("Nightly full units use", vllm.__version__, "with startup-ready callback")
+PY
+fi
 
 # ── Run unit tests with coverage ─────────────────────────────
 # PR builds stop at the first failure for fast feedback. The weekly full build
 # runs every test so one regression cannot hide the others, and keeps a JUnit
 # report of each failure and skip.
 pytest_mode_args=(--maxfail=1)
-if [[ "${CI_WEEKLY_FULL:-0}" == "1" ]]; then
+if [[ "${CI_WEEKLY_FULL:-0}" == "1" || "${VLLM_NIGHTLY_UNIT_TESTS:-0}" == "1" ]]; then
     pytest_mode_args=(-rfEs --junitxml=junit-unit.xml)
 fi
 RUN_DEVDAX_L1_INTEGRATION=1 RUN_DAX_L2_INTEGRATION=1 \

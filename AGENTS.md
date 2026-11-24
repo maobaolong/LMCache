@@ -199,8 +199,11 @@ shebang on a sourced helper does not change its caller's interpreter.
 Run vLLM-dependent unit fixtures against the installed nightly as well.
 The standard K3 unit setup intentionally installs no vLLM; setting pinned
 version variables alone does not exercise modules guarded by `importorskip`.
-For nightly API validation, first source `setup-env.sh`, assert the installed
-vLLM version, then run the full unit entrypoint in that environment.
+For nightly API validation, use `VLLM_NIGHTLY_UNIT_TESTS=1` on the existing
+K3 unit pipeline. It installs the selected runtime, verifies its exact version
+and startup-ready callback, and collects every failure in a JUnit report.
+Use `USE_PINNED_VLLM=false` with empty coordinates for automatic discovery,
+or explicit version/source/archive coordinates to match a verified canary.
 For local pin-writer CLI tests, activate the Python 3.12 virtualenv or prepend
 its `bin` directory to `PATH`: an absolute pytest interpreter alone leaves
 the Bash subprocess without the `python` command it invokes.
@@ -211,8 +214,10 @@ both sides, baseline chose `ROCM_ATTN` / `LHBNC` while the connector chose
 servers and verify their resolved logs before interpreting throughput.
 Keep the existing performance limits and real cache-hit checks.
 At source `8700cc9ba`, the streaming-session helper reads `max_model_len`
-and `num_sampled_tokens_per_step`; a `Scheduler.__new__` fixture must set
-those constructor fields before exercising the real streaming update.
+and `num_sampled_tokens_per_step`; source `341b2b31f` also reads
+`collect_stats`. A `Scheduler.__new__` fixture must set those constructor
+fields before exercising the real update, keeping `log_stats` for older
+versions and `collect_stats` for the newer statistics gate.
 The SDK ring-buffer fixture must construct `FullAttentionSpec` on older
 engines or `AttentionSpec` on source `8700cc9ba`, where the former class was
 removed. Keep the real `AttentionSpec` instance and layer-selection assertions;
