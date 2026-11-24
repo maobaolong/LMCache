@@ -118,10 +118,19 @@ if [[ -n "${PINNED_VLLM_VERSION:-}" ]]; then
         PINNED_VLLM_INDEX_ARGS+=(--extra-index-url "${archive_url}")
     fi
 else
-    # ">=0.0.0.dev0" explicitly limits vLLM to be the only pre-release
-    # package.
-    VLLM_INSTALL_SPEC="vllm[runai,tensorizer,flashinfer]>=0.0.0.dev0"
-    echo "Installing latest vLLM nightly (no pin)"
+    # A newer PyPI release can outrank the current git-local nightly in a
+    # combined resolver. Select from the official nightly index first, then
+    # constrain installation to that version and its immutable archive.
+    nightly_record="$(python3 "${REPO_ROOT}/.buildkite/k3_harness/select-vllm-nightly.py" \
+        "https://wheels.vllm.ai/nightly/${VLLM_CUDA_VARIANT}/vllm/" \
+        "${VLLM_CUDA_VARIANT}")"
+    IFS=$'\t' read -r PINNED_VLLM_VERSION PINNED_VLLM_FULL_SHA \
+        PINNED_VLLM_ARCHIVE_INDEX_URL <<< "${nightly_record}"
+    VLLM_INSTALL_SPEC="vllm[runai,tensorizer,flashinfer]==${PINNED_VLLM_VERSION}"
+    PINNED_VLLM_INDEX_ARGS+=(--extra-index-url "${PINNED_VLLM_ARCHIVE_INDEX_URL}")
+    echo "Installing official vLLM nightly: ${VLLM_INSTALL_SPEC}"
+    echo "Nightly source: ${PINNED_VLLM_FULL_SHA}"
+    echo "Nightly archive: ${PINNED_VLLM_ARCHIVE_INDEX_URL}"
 fi
 uv pip install -U "${VLLM_INSTALL_SPEC}" \
     --reinstall-package transformers \

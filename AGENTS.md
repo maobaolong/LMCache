@@ -198,6 +198,11 @@ it. Report both the failing run (step 5) and the passing run (step 6) in chat.
 
 ### CUDA nightly wheel provenance
 
+Select a CUDA nightly from its official index before resolving dependencies.
+A broad `>=0.0.0.dev0` constraint with `unsafe-best-match` can select PyPI's
+stable 0.34.0 over a newer-source 0.34.0rc1.dev build. Keep the selected exact
+version, full source SHA and immutable CUDA archive together.
+
 Buildkite's Kubernetes command phase uses `/bin/sh`. Wrap multiline canary
 commands that source Bash helpers in `bash -euo pipefail` (as the SGLang
 canary does), and test the uploaded command through a POSIX shell. A Bash

@@ -78,6 +78,13 @@ set `VLLM_CUDA_VARIANT` explicitly when testing a cu132 wheel. Both canary
 transports must report the same wheel version and variant before the pin
 writer publishes an immutable archive URL.
 
+An unpinned canary first selects a compatible wheel from the official nightly
+index, then installs that exact version from its immutable source archive.
+Resolving a broad prerelease constraint against PyPI and the nightly index
+together can select an older-source stable release with a higher PEP 440
+version. Missing compatible nightlies or inconsistent source coordinates fail
+setup instead of falling back to PyPI.
+
 For cu132 on older driver branches, setup loads the pinned NVIDIA
 `cuda-compat-13-2` userspace libraries inside the pod. Native drivers at 595
 or newer retain their own libraries. Setup records the GPU and host driver,
