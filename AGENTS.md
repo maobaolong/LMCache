@@ -394,3 +394,14 @@ PR body through REST alone did not activate the new attachment. Save the final
 body in the same GitHub description web form that owns the upload, then verify
 the attachment without authentication and compare its SHA256 with the local
 file before publishing it as review evidence.
+
+When generating Buildkite YAML commands with checksum heredocs, keep checksum
+lines at the command block's indentation level and use the canonical two-space
+separator between SHA256 and filename. Parse the YAML, check the resulting Bash
+with `bash -n`, and run the checksum command on fixtures before submitting a
+promotion command; extra heredoc indentation survives YAML dedenting.
+
+Buildkite artifact listings are paginated. When collecting promotion evidence,
+use the exact job endpoint with `path=<filename>&state=finished`, and reject
+missing or duplicate matches. A unit job uploads many coverage files, so its
+JUnit report need not appear on the default first page.
